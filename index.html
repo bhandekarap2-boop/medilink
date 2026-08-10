@@ -79,7 +79,7 @@ h1,h2,h3,h4{font-family:'Syne',sans-serif;}
 ::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px;}
 
 /* LOGIN PAGE */
-#loginPage{display:flex;align-items:center;justify-content:center;min-height:100vh;background:radial-gradient(ellipse at 20% 50%,#001a33 0%,var(--bg) 60%);}
+#loginPage{display:flex;align-items:center;justify-content:center;min-height:100vh;width:100vw;background:radial-gradient(ellipse at 20% 50%,#001a33 0%,var(--bg) 60%);}
 .login-container{width:100%;max-width:440px;padding:20px;}
 .login-logo{text-align:center;margin-bottom:40px;}
 .login-logo h1{font-size:2.5rem;font-weight:700;color:var(--accent);letter-spacing:-1px;}
@@ -240,11 +240,20 @@ tr:hover td{background:var(--surface2);}
 
 /* DESKTOP SCALE-UP: the app was built mobile-first; widen things back up on real desktop screens */
 @media(min-width:1024px){
-  #loginInnerContainer{max-width:480px;}
+  #loginInnerContainer{max-width:780px !important;padding:28px 24px !important;}
+  #loginInnerContainer > div:first-child img{width:280px !important;}
+  #loginInnerContainer .form-group input,
+  #loginInnerContainer .form-group select,
+  #loginInnerContainer .form-group textarea{font-size:1.05rem;padding:15px 18px;}
+  #loginInnerContainer .btn,
+  #loginInnerContainer button,
+  #loginInnerContainer [onclick^="setRole"]{font-size:1rem !important;padding:15px !important;}
+  #loginTab,
+  #registerTab > div{padding:28px !important;}
   :root{ --card-max-w: 460px; }
 }
 @media(min-width:1400px){
-  #loginInnerContainer{max-width:520px;}
+  #loginInnerContainer{max-width:840px !important;}
   :root{ --card-max-w: 500px; }
 }
 
@@ -267,8 +276,8 @@ tr:hover td{background:var(--surface2);}
 <body>
 
 <!-- LOGIN PAGE -->
-<div id="loginPage" style="min-height:100vh;overflow-y:auto;background:var(--bg);">
-  <div id="loginInnerContainer" style="max-width:480px;margin:0 auto;padding:20px 16px;">
+<div id="loginPage" style="min-height:100vh;width:100vw;overflow-y:auto;background:var(--bg);">
+  <div id="loginInnerContainer" style="width:min(840px,calc(100vw - 32px));margin:0 auto;padding:20px 16px;">
     
     <!-- Logo -->
     <div style="text-align:center;padding:28px 0 16px;">
@@ -830,20 +839,47 @@ let medicines = [];
 let selectedRole = 'admin';
 function setRole(role) {
   selectedRole = role;
+  const tabs = {
+    admin: document.getElementById('roleTabAdmin'),
+    doctor: document.getElementById('roleTabDoctor'),
+    patient: document.getElementById('roleTabPatient')
+  };
+  Object.keys(tabs).forEach(key => {
+    const tab = tabs[key];
+    if (!tab) return;
+    const active = key === role;
+    tab.style.background = active ? 'var(--accent)' : 'transparent';
+    tab.style.color = active ? '#000' : 'var(--text2)';
+  });
   document.querySelectorAll('.role-tab').forEach((t,i) => t.classList.toggle('active', ['admin','doctor','patient'][i] === role));
-  const emailLabel = document.querySelector('label[for="loginEmailLabel"]') || document.querySelector('.login-card .form-group:first-child label');
+
+  const adminSection = document.getElementById('adminLoginSection');
+  const doctorSection = document.getElementById('doctorLoginSection');
+  const patientSection = document.getElementById('patientLoginSection');
+  if (adminSection) adminSection.style.display = role === 'admin' ? 'block' : 'none';
+  if (doctorSection) doctorSection.style.display = role === 'doctor' ? 'block' : 'none';
+  if (patientSection) patientSection.style.display = role === 'patient' ? 'block' : 'none';
+
+  const adminTabs = document.getElementById('adminRegisterTabs');
+  if (adminTabs) adminTabs.style.display = role === 'admin' ? 'flex' : 'none';
+  if (role !== 'admin') showLoginTab();
+
+  const emailLabel = document.getElementById('loginEmailLabel') || document.querySelector('.login-card .form-group:first-child label');
   const emailInput = document.getElementById('loginEmail');
-  if (role === 'patient') {
+  if (emailInput && role === 'patient') {
     emailInput.placeholder = 'Patient ID (e.g. DEF-0001)';
     if (emailLabel) emailLabel.textContent = 'Patient ID';
-  } else if (role === 'doctor') {
+  } else if (emailInput && role === 'doctor') {
     emailInput.placeholder = 'Doctor Code (e.g. DOC-DEF-001)';
     if (emailLabel) emailLabel.textContent = 'Doctor Code';
-  } else {
+  } else if (emailInput) {
     emailInput.placeholder = 'Admin email';
     if (emailLabel) emailLabel.textContent = 'Email';
   }
-  document.getElementById('rfidLoginSection').style.display = role === 'patient' ? 'block' : 'none';
+  const rfidLoginSection = document.getElementById('rfidLoginSection');
+  if (rfidLoginSection) rfidLoginSection.style.display = role === 'patient' ? 'block' : 'none';
+  const errEl = document.getElementById('loginError');
+  if (errEl) errEl.textContent = '';
 }
 
 async function loginWithRFID() {
@@ -5278,7 +5314,7 @@ function printBillAdvanced(data) {
   <div style="text-align:center;font-size:11px;color:#888;border-top:1px solid #ddd;padding-top:12px;">
     Thank you for choosing ${hospName} • Powered by MediFlow<br/>Computer generated receipt — No signature required
   </div>
-  <script>window.onload=function(){window.print();}</script>
+  <script>window.onload=function(){window.print();}<\/script>
   </body></html>`;
   const w = window.open('','_blank'); w.document.write(html); w.document.close();
 }
@@ -6387,7 +6423,7 @@ function printBill(data) {
     This is a computer generated receipt — No signature required<br/>
     Powered by MediFlow
   </div>
-  <script>window.onload=function(){window.print();}</script>
+  <script>window.onload=function(){window.print();}<\/script>
   </body></html>`;
   const w = window.open('','_blank'); w.document.write(html); w.document.close();
 }
@@ -6877,7 +6913,7 @@ async function printChart(role) {
   <div style="margin-top:20px;font-size:11px;color:#888;text-align:center;border-top:1px solid #eee;padding-top:10px;">
     Generated by MediFlow • ${hosp.name||''} • ${new Date().toLocaleDateString()}
   </div>
-  <script>window.onload=function(){window.print();}</script>
+  <script>window.onload=function(){window.print();}<\/script>
   </body></html>`;
   const w = window.open('','_blank'); w.document.write(html); w.document.close();
 }
@@ -9650,7 +9686,7 @@ async function loginAdminWithEmail() {
     }
     currentUser = { uid: cred.user.uid, email: cred.user.email, name: d.name||'Admin', hospitalId: d.hospitalId, role: 'admin' };
     currentHospitalId = d.hospitalId;
-    showMainApp();
+    launchApp();
     showToast('✅ Welcome Admin!', 'success');
   } catch(e) {
     console.error('Admin login error:', e.code, e.message);
