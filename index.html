@@ -1077,6 +1077,7 @@ async function handleLogin() {
 }
 
 function launchApp() {
+  currentRole = currentRole || (currentUser && currentUser.role) || selectedRole || 'admin';
   document.getElementById('loginPage').style.display = 'none';
   document.getElementById('app').style.display = 'flex';
   document.getElementById('userAvatar').textContent = currentUser.name ? currentUser.name[0].toUpperCase() : '?';
@@ -9685,6 +9686,7 @@ async function loginAdminWithEmail() {
       return;
     }
     currentUser = { uid: cred.user.uid, email: cred.user.email, name: d.name||'Admin', hospitalId: d.hospitalId, role: 'admin' };
+    currentRole = 'admin';
     currentHospitalId = d.hospitalId;
     launchApp();
     showToast('✅ Welcome Admin!', 'success');
