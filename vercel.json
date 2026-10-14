@@ -2,5 +2,14 @@
   "buildCommand": null,
   "outputDirectory": ".",
   "cleanUrls": true,
-  "trailingSlash": false
+  "trailingSlash": false,
+  "crons": [
+    { "path": "/api/membership-sweep", "schedule": "0 3 * * *" },
+    { "path": "/api/send-reminders", "schedule": "30 3 * * *" }
+  ],
+  "functions": {
+    "server.js": {
+      "maxDuration": 60
+    }
+  }
 }
