@@ -2623,6 +2623,23 @@ app.post('/api/device/report', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
+// The scanner sends a card tap here. We write it to the same realtime-database path the app already listens to,
+// so the Patient Scanner, RFID registration and check-in screens receive it without any app change.
+const RTDB_URL = 'https://medilink-55d49-default-rtdb.asia-southeast1.firebasedatabase.app';
+app.post('/api/device/card', async (req, res) => {
+  try {
+    const d = await devAuth(req, res); if (!d) return;
+    const cardId = String((req.body || {}).cardId || '').trim().toUpperCase().slice(0, 40);
+    if (!cardId) return res.status(400).json({ error: 'No card id' });
+    const hid = d.data.hospitalId;
+    if (!hid) return res.status(400).json({ error: 'Scanner is not linked to a hospital' });
+    getAdminDb();   // makes sure the admin app is ready
+    await admin.app().database(RTDB_URL).ref('rfid/' + hid + '/lastScan').set(cardId);
+    await d.ref.update({ lastSeen: admin.firestore.FieldValue.serverTimestamp(), lastCard: cardId });
+    res.json({ ok: true });
+  } catch (e) { console.error('card endpoint failed:', e.message); res.status(500).json({ error: 'server error' }); }
+});
+
 // ============ AUTOMATIC REMINDERS ============
 // Runs every morning (Vercel cron, 09:00 India time) and sends, by SMS first and WhatsApp as backup:
 //   1. a reminder the day before every booked appointment, with one-tap Cancel / Reschedule links;
