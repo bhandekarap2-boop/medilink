@@ -2634,9 +2634,10 @@ app.post('/api/device/card', async (req, res) => {
     const hid = d.data.hospitalId;
     if (!hid) return res.status(400).json({ error: 'Scanner is not linked to a hospital' });
     getAdminDb();   // makes sure the admin app is ready
+    // Write the card first, so the app sees it at once; the lastSeen update can finish after the reply.
     await admin.app().database(RTDB_URL).ref('rfid/' + hid + '/lastScan').set(cardId);
-    await d.ref.update({ lastSeen: admin.firestore.FieldValue.serverTimestamp(), lastCard: cardId });
     res.json({ ok: true });
+    d.ref.update({ lastSeen: admin.firestore.FieldValue.serverTimestamp(), lastCard: cardId }).catch(() => {});
   } catch (e) { console.error('card endpoint failed:', e.message); res.status(500).json({ error: 'server error' }); }
 });
 
