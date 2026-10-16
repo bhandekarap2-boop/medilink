@@ -19173,7 +19173,9 @@ mfIconifyPage();
 // ============ DEVICE WI-FI SETUP (admin) ============
 // Add a scanner, see the Wi-Fi networks it can reach, choose one, and it connects and remembers the network.
 let _devPollTimer = null;
-function wifiBars(rssi) { const n = rssi >= -55 ? 4 : rssi >= -67 ? 3 : rssi >= -78 ? 2 : 1; return '▮'.repeat(n) + '▯'.repeat(4 - n); }
+// Signal strength as plain words (no symbols, so nothing shows as a box or circle)
+function wifiBars(rssi) { return rssi >= -55 ? 'Strong' : rssi >= -67 ? 'Good' : rssi >= -78 ? 'Fair' : 'Weak'; }
+let _devPicking = null; // the network the admin is typing a password for
 async function devApi(path, body) {
   const idToken = await auth.currentUser.getIdToken();
   const r = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(Object.assign({ idToken: idToken, hospitalId: currentHospitalId }, body || {})) });
@@ -19183,16 +19185,21 @@ async function devApi(path, body) {
 }
 function renderAdminDevice() {
   const mc = document.getElementById('mainContent');
-  mc.innerHTML = '<div class="page-header"><h2>🔌 Device Setup</h2><p>Connect your scanner to Wi‑Fi. It remembers the network and reconnects by itself.</p></div>' +
+  mc.innerHTML = '<div class="page-header"><h2>Device Setup</h2><p>Connect your scanner to Wi‑Fi. It remembers the network and reconnects by itself.</p></div>' +
     '<div class="table-container" style="padding:20px;margin-bottom:16px;max-width:640px;">' +
     '<div class="section-title">Add a scanner</div>' +
     '<div class="form-group"><label>Name (e.g. Reception scanner)</label><input id="devName" placeholder="Reception scanner"/></div>' +
-    '<button class="btn btn-primary" style="width:auto;" onclick="devAddDevice()">➕ Add scanner</button>' +
+    '<button class="btn btn-primary" style="width:auto;" onclick="devAddDevice()">Add scanner</button>' +
     '<div id="devNewToken" style="margin-top:14px;"></div></div>' +
     '<div id="devList"><div class="empty-state"><p>Loading scanners…</p></div></div>';
   devLoad();
   clearInterval(_devPollTimer);
-  _devPollTimer = setInterval(() => { if (window._currentPage === 'adminDevice') devLoad(); else clearInterval(_devPollTimer); }, 4000);
+  _devPollTimer = setInterval(() => {
+    if (window._currentPage !== 'adminDevice') { clearInterval(_devPollTimer); return; }
+    // pause the refresh while the password box is being typed in
+    const typing = _devPicking && document.activeElement && document.activeElement.id === 'devPw_' + _devPicking.id;
+    if (!typing) devLoad();
+  }, 4000);
 }
 async function devAddDevice() {
   const name = (document.getElementById('devName').value || '').trim();
@@ -19206,7 +19213,7 @@ async function devAddDevice() {
       '<span style="color:var(--text2);">Put both into the scanner firmware (see hardware\\esp32-wifi-setup).</span></div>';
     document.getElementById('devName').value = '';
     devLoad();
-  } catch (e) { showToast('❌ ' + e.message, 'error'); }
+  } catch (e) { showToast('Error: ' + e.message, 'error'); }
 }
 async function devLoad() {
   if (!document.getElementById('devList')) return;
@@ -19214,48 +19221,69 @@ async function devLoad() {
     const d = await devApi('/api/device-wifi/list');
     const el = document.getElementById('devList');
     if (!d.devices.length) { el.innerHTML = '<div class="empty-state"><p>No scanners yet. Add one above.</p></div>'; return; }
+    // keep what was typed in the password box while the list is rebuilt
+    const typed = _devPicking ? ((document.getElementById('devPw_' + _devPicking.id) || {}).value || '') : '';
     el.innerHTML = d.devices.map(v => {
       const seen = v.lastSeen ? new Date(v.lastSeen).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : 'never';
       const online = v.lastSeen && Date.now() - v.lastSeen < 90000;
-      const nets = (v.networks || []).slice().sort((a, b) => b.rssi - a.rssi).map(n =>
+      // The scanner only works on 2.4 GHz, so networks named as 5G are hidden
+      const nets = (v.networks || []).filter(n => !/5\s?g/i.test(n.ssid || '')).slice().sort((a, b) => b.rssi - a.rssi).map(n =>
         '<div onclick="devPick(\'' + v.id + '\',\'' + escHtmlSafe(n.ssid).replace(/'/g, '') + '\')" style="display:flex;justify-content:space-between;gap:8px;padding:10px 12px;border-bottom:1px solid var(--border);cursor:pointer;">' +
-        '<span>' + (n.secure ? '🔒 ' : '') + escHtmlSafe(n.ssid || '(hidden)') + '</span><span style="font-family:monospace;color:var(--accent);">' + wifiBars(n.rssi) + ' ' + n.rssi + ' dBm</span></div>').join('');
+        '<span>' + escHtmlSafe(n.ssid || '(hidden)') + (n.secure ? ' (password needed)' : ' (open)') + '</span><span style="color:var(--accent);">' + wifiBars(n.rssi) + '</span></div>').join('');
       return '<div class="table-container" style="padding:18px;margin-bottom:14px;max-width:640px;">' +
         '<div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;align-items:center;">' +
         '<div><strong>' + escHtmlSafe(v.name) + '</strong> <span style="color:var(--text2);font-size:.78rem;">' + escHtmlSafe(v.id) + '</span>' +
-        '<div style="font-size:.8rem;color:' + (online ? 'var(--green)' : 'var(--orange)') + ';">● ' + (online ? 'online' : 'offline') + ' · last seen ' + seen + '</div>' +
+        '<div style="font-size:.8rem;color:' + (online ? 'var(--green)' : 'var(--orange)') + ';">' + (online ? 'Online' : 'Offline') + ' · last seen ' + seen + '</div>' +
         '<div style="font-size:.8rem;color:var(--text2);">' + (v.currentSsid ? 'Connected to <strong>' + escHtmlSafe(v.currentSsid) + '</strong> · ' : '') + escHtmlSafe(v.status || '') + '</div></div>' +
         '<div style="display:flex;gap:6px;flex-wrap:wrap;">' +
-        '<button class="btn btn-primary btn-sm" onclick="devScan(\'' + v.id + '\')">📡 Scan Wi‑Fi</button>' +
-        '<button class="btn btn-danger btn-sm" onclick="devRemove(\'' + v.id + '\')">🗑 Remove</button></div></div>' +
+        '<button class="btn btn-primary btn-sm" onclick="devScan(\'' + v.id + '\')">Scan Wi‑Fi</button>' +
+        '<button class="btn btn-danger btn-sm" onclick="devRemove(\'' + v.id + '\')">Remove</button></div></div>' +
         (v.scanRequested ? '<div style="font-size:.8rem;color:var(--text2);margin-top:10px;">Scanning… the list appears in a few seconds.</div>' : '') +
-        (nets ? '<div style="margin-top:12px;border:1px solid var(--border);border-radius:10px;overflow:hidden;">' + nets + '</div>' +
+        (nets ? '<div style="font-size:.8rem;color:var(--text2);margin-top:10px;">Choose the network with 2.4 GHz (the scanner cannot use 5G networks).</div>' +
+          '<div style="margin-top:8px;border:1px solid var(--border);border-radius:10px;overflow:hidden;">' + nets + '</div>' +
           '<div id="devPick_' + v.id + '" style="margin-top:12px;"></div>' : (v.scanAt ? '<div style="font-size:.8rem;color:var(--text2);margin-top:10px;">No networks were found.</div>' : '')) +
         (v.connectPending ? '<div style="font-size:.8rem;color:var(--orange);margin-top:10px;">Waiting for the scanner to connect…</div>' : '') +
         '</div>';
     }).join('');
+    // reopen the password box for the network being typed, with the typed text
+    if (_devPicking) {
+      const box = document.getElementById('devPick_' + _devPicking.id);
+      if (box) {
+        devPick(_devPicking.id, _devPicking.ssid);
+        const inp = document.getElementById('devPw_' + _devPicking.id);
+        if (inp) inp.value = typed;
+      } else _devPicking = null;
+    }
   } catch (e) { /* page may have changed */ }
 }
 async function devScan(id) {
-  try { await devApi('/api/device-wifi/scan', { deviceId: id }); showToast('📡 Scanning — the list will appear shortly', 'success'); devLoad(); }
-  catch (e) { showToast('❌ ' + e.message, 'error'); }
+  try { await devApi('/api/device-wifi/scan', { deviceId: id }); showToast('Scanning — the list will appear shortly', 'success'); devLoad(); }
+  catch (e) { showToast('Error: ' + e.message, 'error'); }
 }
 function devPick(id, ssid) {
   const box = document.getElementById('devPick_' + id);
   if (!box) return;
-  box.innerHTML = '<div style="font-weight:700;margin-bottom:6px;">Connect to ' + escHtmlSafe(ssid) + '</div>' +
-    '<input id="devPw_' + id + '" type="password" placeholder="Wi‑Fi password (leave empty for open networks)" style="width:100%;margin-bottom:8px;"/>' +
-    '<button class="btn btn-success" style="width:auto;" onclick="devConnect(\'' + id + '\',\'' + ssid.replace(/'/g, '') + '\')">✅ Connect scanner</button>';
+  _devPicking = { id: id, ssid: ssid };
+  box.innerHTML = '<div style="font-weight:700;margin-bottom:6px;">Connect to ' + escHtmlSafe(ssid) + ' (2.4 GHz)</div>' +
+    '<div style="display:flex;gap:6px;margin-bottom:8px;"><input id="devPw_' + id + '" type="password" placeholder="Wi‑Fi password (leave empty for open networks)" style="flex:1;" autocomplete="off"/>' +
+    '<button type="button" class="btn btn-secondary btn-sm" style="width:auto;" onclick="devTogglePw(\'' + id + '\')">Show</button></div>' +
+    '<button class="btn btn-success" style="width:auto;" onclick="devConnect(\'' + id + '\',\'' + ssid.replace(/'/g, '') + '\')">Connect scanner</button>';
+}
+function devTogglePw(id) {
+  const inp = document.getElementById('devPw_' + id);
+  if (!inp) return;
+  inp.type = inp.type === 'password' ? 'text' : 'password';
+  inp.focus();
 }
 async function devConnect(id, ssid) {
   const pw = (document.getElementById('devPw_' + id) || {}).value || '';
-  try { await devApi('/api/device-wifi/connect', { deviceId: id, ssid: ssid, password: pw }); showToast('✅ Sent — the scanner will connect and remember this network', 'success'); devLoad(); }
-  catch (e) { showToast('❌ ' + e.message, 'error'); }
+  try { await devApi('/api/device-wifi/connect', { deviceId: id, ssid: ssid, password: pw }); showToast('Sent — the scanner will connect and remember this network', 'success'); _devPicking = null; devLoad(); }
+  catch (e) { showToast('Error: ' + e.message, 'error'); }
 }
 async function devRemove(id) {
   if (!confirm('Remove this scanner from MediFlow? It will stop working until you add it again.')) return;
-  try { await devApi('/api/device-wifi/remove', { deviceId: id }); devLoad(); }
-  catch (e) { showToast('❌ ' + e.message, 'error'); }
+  try { await devApi('/api/device-wifi/remove', { deviceId: id }); if (_devPicking && _devPicking.id === id) _devPicking = null; devLoad(); }
+  catch (e) { showToast('Error: ' + e.message, 'error'); }
 }
 // ============ OWNER: FULL CONTROL OF A HOSPITAL ============
 // Every switch a hospital admin has in their own Settings, flipped remotely from here.
