@@ -2641,6 +2641,68 @@ app.post('/api/device/card', async (req, res) => {
   } catch (e) { console.error('card endpoint failed:', e.message); res.status(500).json({ error: 'server error' }); }
 });
 
+// ============ SCANNER DISPLAY DATA ============
+// One call gives the scanner's screen everything it cycles through: hospital name, temperature for the
+// hospital's city, today's patients, doctors present (and who just arrived), and the last card scanned.
+const _weatherCache = new Map();
+async function cityTemperature(city) {
+  const key = String(city || '').trim().toLowerCase();
+  if (!key) return null;
+  const hit = _weatherCache.get(key);
+  if (hit && Date.now() - hit.at < 10 * 60 * 1000) return hit.temp;
+  try {
+    const geo = await (await fetch('https://geocoding-api.open-meteo.com/v1/search?count=1&name=' + encodeURIComponent(key))).json();
+    const place = geo && geo.results && geo.results[0];
+    if (!place) return null;
+    const wx = await (await fetch('https://api.open-meteo.com/v1/forecast?latitude=' + place.latitude + '&longitude=' + place.longitude + '&current=temperature_2m')).json();
+    const temp = wx && wx.current && typeof wx.current.temperature_2m === 'number' ? Math.round(wx.current.temperature_2m) : null;
+    _weatherCache.set(key, { temp, at: Date.now() });
+    return temp;
+  } catch (e) { return null; }
+}
+app.get('/api/device/display', async (req, res) => {
+  try {
+    const d = await devAuth(req, res); if (!d) return;
+    const db = getAdminDb();
+    const hid = d.data.hospitalId;
+    const today = new Date(Date.now() + 5.5 * 3600e3).toISOString().slice(0, 10);   // India date
+    const hospSnap = await db.collection('hospitals').doc(hid).get();
+    const h = hospSnap.exists ? hospSnap.data() : {};
+    // city = the last part of the address line 2 ("City, State, PIN")
+    const city = String(h.address2 || '').split(',')[0].trim();
+    const [temp, apptSnap, attSnap] = await Promise.all([
+      cityTemperature(city),
+      db.collection('hospitals/' + hid + '/appointments').where('appointmentDate', '==', today).get(),
+      db.collection('hospitals/' + hid + '/attendance').where('date', '==', today).get()
+    ]);
+    const patients = apptSnap.docs.map(x => x.data()).filter(a => a.status !== 'cancelled')
+      .sort((a, b) => (a.token || 0) - (b.token || 0))
+      .map(a => ({ name: a.patientName || 'Patient', token: a.token || null, doctor: a.doctorName || '', status: a.status || '' }));
+    const doctors = attSnap.docs.map(x => x.data()).map(a => a.doctorName || a.doctorId || 'Doctor');
+    // doctors who were not present at the last check have just arrived
+    const before = Array.isArray(d.data.displayDoctors) ? d.data.displayDoctors : [];
+    const arrivals = doctors.filter(n => !before.includes(n));
+    // name for the last card tapped
+    let lastCard = null;
+    if (d.data.lastCard) {
+      const pSnap = await db.collection('hospitals/' + hid + '/patients').where('rfidCardId', '==', d.data.lastCard).limit(1).get();
+      lastCard = { cardId: d.data.lastCard, patient: pSnap.empty ? null : (pSnap.docs[0].data().name || null) };
+    }
+    await d.ref.update({ displayDoctors: doctors, lastSeen: admin.firestore.FieldValue.serverTimestamp() }).catch(() => {});
+    res.json({
+      hospital: h.name || 'MediFlow',
+      city: city || null,
+      temp,
+      todayCount: patients.length,
+      patients: patients.slice(0, 12),
+      doctorsPresent: doctors,
+      arrivals,
+      lastCard,
+      generatedAt: Date.now()
+    });
+  } catch (e) { console.error('display endpoint failed:', e.message); res.status(500).json({ error: 'server error' }); }
+});
+
 // ============ AUTOMATIC REMINDERS ============
 // Runs every morning (Vercel cron, 09:00 India time) and sends, by SMS first and WhatsApp as backup:
 //   1. a reminder the day before every booked appointment, with one-tap Cancel / Reschedule links;
