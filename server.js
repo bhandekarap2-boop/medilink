@@ -2642,22 +2642,28 @@ app.post('/api/device/card', async (req, res) => {
 });
 
 // ============ SCANNER DISPLAY DATA ============
-// One call gives the scanner's screen everything it cycles through: hospital name, temperature for the
-// hospital's city, today's patients, doctors present (and who just arrived), and the last card scanned.
+// One call gives the scanner's screens everything they show: hospital name, weather for the hospital's city,
+// today's patients, queue status, doctors present (and who just arrived), pharmacy alerts, the latest
+// notification sent from the app, and the last card scanned.
 const _weatherCache = new Map();
-async function cityTemperature(city) {
+async function cityWeather(city) {
   const key = String(city || '').trim().toLowerCase();
   if (!key) return null;
   const hit = _weatherCache.get(key);
-  if (hit && Date.now() - hit.at < 10 * 60 * 1000) return hit.temp;
+  if (hit && Date.now() - hit.at < 10 * 60 * 1000) return hit.w;
   try {
     const geo = await (await fetch('https://geocoding-api.open-meteo.com/v1/search?count=1&name=' + encodeURIComponent(key))).json();
     const place = geo && geo.results && geo.results[0];
     if (!place) return null;
-    const wx = await (await fetch('https://api.open-meteo.com/v1/forecast?latitude=' + place.latitude + '&longitude=' + place.longitude + '&current=temperature_2m')).json();
-    const temp = wx && wx.current && typeof wx.current.temperature_2m === 'number' ? Math.round(wx.current.temperature_2m) : null;
-    _weatherCache.set(key, { temp, at: Date.now() });
-    return temp;
+    const wx = await (await fetch('https://api.open-meteo.com/v1/forecast?latitude=' + place.latitude + '&longitude=' + place.longitude + '&current=temperature_2m,relative_humidity_2m')).json();
+    const c = wx && wx.current;
+    if (!c) return null;
+    const w = {
+      temp: typeof c.temperature_2m === 'number' ? Math.round(c.temperature_2m) : null,
+      humidity: typeof c.relative_humidity_2m === 'number' ? Math.round(c.relative_humidity_2m) : null
+    };
+    _weatherCache.set(key, { w, at: Date.now() });
+    return w;
   } catch (e) { return null; }
 }
 app.get('/api/device/display', async (req, res) => {
@@ -2668,20 +2674,37 @@ app.get('/api/device/display', async (req, res) => {
     const today = new Date(Date.now() + 5.5 * 3600e3).toISOString().slice(0, 10);   // India date
     const hospSnap = await db.collection('hospitals').doc(hid).get();
     const h = hospSnap.exists ? hospSnap.data() : {};
-    // city = the last part of the address line 2 ("City, State, PIN")
+    // city = the first part of the address line 2 ("City, State, PIN")
     const city = String(h.address2 || '').split(',')[0].trim();
-    const [temp, apptSnap, attSnap] = await Promise.all([
-      cityTemperature(city),
+    const [wx, apptSnap, attSnap, medSnap, noteSnap] = await Promise.all([
+      cityWeather(city),
       db.collection('hospitals/' + hid + '/appointments').where('appointmentDate', '==', today).get(),
-      db.collection('hospitals/' + hid + '/attendance').where('date', '==', today).get()
+      db.collection('hospitals/' + hid + '/attendance').where('date', '==', today).get(),
+      db.collection('hospitals/' + hid + '/medicines').get(),
+      db.collection('hospitals/' + hid + '/notifications').orderBy('createdAt', 'desc').limit(1).get().catch(() => ({ docs: [] }))
     ]);
     const patients = apptSnap.docs.map(x => x.data()).filter(a => a.status !== 'cancelled')
       .sort((a, b) => (a.token || 0) - (b.token || 0))
       .map(a => ({ name: a.patientName || 'Patient', token: a.token || null, doctor: a.doctorName || '', status: a.status || '' }));
+    const waiting = patients.filter(p => p.status === 'pending').length;
     const doctors = attSnap.docs.map(x => x.data()).map(a => a.doctorName || a.doctorId || 'Doctor');
     // doctors who were not present at the last check have just arrived
     const before = Array.isArray(d.data.displayDoctors) ? d.data.displayDoctors : [];
     const arrivals = doctors.filter(n => !before.includes(n));
+    // pharmacy: low stock and expiring within 60 days
+    const soon = Date.now() + 60 * 86400e3;
+    let lowStock = 0, expiring = 0;
+    medSnap.docs.forEach(x => {
+      const m = x.data();
+      if ((Number(m.stock) || 0) <= (Number(m.lowStockThreshold) || 5)) lowStock++;
+      if (m.expiryDate) { const e = new Date(String(m.expiryDate).slice(0, 10) + 'T00:00:00Z').getTime(); if (!isNaN(e) && e <= soon) expiring++; }
+    });
+    // latest notification sent from the app
+    let message = null;
+    if (noteSnap.docs && noteSnap.docs.length) {
+      const n = noteSnap.docs[0].data();
+      message = { title: n.title || '', text: n.description || '', by: n.sentBy || '' };
+    }
     // name for the last card tapped
     let lastCard = null;
     if (d.data.lastCard) {
@@ -2692,11 +2715,16 @@ app.get('/api/device/display', async (req, res) => {
     res.json({
       hospital: h.name || 'MediFlow',
       city: city || null,
-      temp,
+      temp: wx ? wx.temp : null,
+      humidity: wx ? wx.humidity : null,
       todayCount: patients.length,
+      waiting,
+      queueGood: waiting <= 5,
       patients: patients.slice(0, 12),
       doctorsPresent: doctors,
       arrivals,
+      pharmacy: { lowStock, expiring, good: lowStock === 0 && expiring === 0 },
+      message,
       lastCard,
       generatedAt: Date.now()
     });
