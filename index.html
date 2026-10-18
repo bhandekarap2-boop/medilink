@@ -19296,34 +19296,45 @@ async function devRemove(id) {
   catch (e) { showToast('Error: ' + e.message, 'error'); }
 }
 // ============ ADMIN: DISPLAY SETUP (scanner screens) ============
+// The MediFlow info screen is always on, so it is not listed here.
 const DS_LIST = [
   { key: 'patients', label: "Today's patients" },
   { key: 'queue', label: 'Queue status (GOOD / BUSY)' },
   { key: 'doctors', label: 'Doctors present and arrivals' },
   { key: 'temp', label: 'Temperature (city and box)' },
-  { key: 'message', label: 'Messages from the app' },
+  { key: 'message', label: 'Messages (the message box below, or app notifications)' },
   { key: 'pharmacy', label: 'Medical store alerts' },
-  { key: 'card', label: 'Last card scanned' },
-  { key: 'credit', label: 'MediFlow info screen' }
+  { key: 'card', label: 'Last card scanned' }
 ];
+const DS_MSG_MAX = 42;   // the scanner screen fits two lines of about 21 characters
 async function renderAdminDisplaySetup() {
   const mc = document.getElementById('mainContent');
   mc.innerHTML = '<div class="page-header"><h2>Display Setup</h2><p>Choose which screens show on the scanner display. The top bar and the MediFlow name always show.</p></div>' +
     '<div class="table-container" style="padding:20px;max-width:640px;"><div id="dsList"><div class="empty-state"><p>Loading…</p></div></div>' +
+    '<div class="form-group" style="margin-top:16px;"><label>Message for the scanner screen (max ' + DS_MSG_MAX + ' characters)</label>' +
+    '<textarea id="dsMsg" rows="2" maxlength="' + DS_MSG_MAX + '" placeholder="e.g. Doctor timings: 10 AM to 2 PM"></textarea>' +
+    '<div style="font-size:.78rem;color:var(--text2);margin-top:4px;">Leave it empty to show the latest notification instead.</div></div>' +
     '<button class="btn btn-primary" style="width:auto;margin-top:14px;" onclick="saveDisplaySetup()">Save</button></div>';
   try {
     const snap = await db.collection('hospitals').doc(currentHospitalId).get();
-    const cur = (snap.exists && snap.data().displayScreens) || {};
+    const data = snap.exists ? snap.data() : {};
+    const cur = data.displayScreens || {};
     document.getElementById('dsList').innerHTML = DS_LIST.map(s =>
       '<label style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--border);">' +
       '<input type="checkbox" id="ds_' + s.key + '" ' + (cur[s.key] !== false ? 'checked' : '') + ' style="width:auto;"/> ' + s.label + '</label>').join('');
+    const msgText = (data.displayMessage && data.displayMessage.text) || '';
+    document.getElementById('dsMsg').value = msgText;
   } catch (e) { showToast('Could not load: ' + e.message, 'error'); }
 }
 async function saveDisplaySetup() {
-  const screens = {};
+  const screens = { credit: true };   // the MediFlow info screen is always on
   DS_LIST.forEach(s => { screens[s.key] = document.getElementById('ds_' + s.key).checked; });
+  const text = (document.getElementById('dsMsg').value || '').trim().slice(0, DS_MSG_MAX);
   try {
-    await db.collection('hospitals').doc(currentHospitalId).update({ displayScreens: screens });
+    await db.collection('hospitals').doc(currentHospitalId).update({
+      displayScreens: screens,
+      displayMessage: { text: text, updatedAt: firebase.firestore.FieldValue.serverTimestamp() }
+    });
     showToast('Display settings saved', 'success');
   } catch (e) { showToast('Could not save: ' + e.message, 'error'); }
 }

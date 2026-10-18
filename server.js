@@ -2705,6 +2705,9 @@ app.get('/api/device/display', async (req, res) => {
       const n = noteSnap.docs[0].data();
       message = { title: n.title || '', text: n.description || '', by: n.sentBy || '' };
     }
+    // a message the admin typed in Display Setup replaces the notification
+    const dm = h.displayMessage ? String(h.displayMessage.text || '').trim() : '';
+    if (dm) message = { title: 'Message', text: dm.slice(0, 42), by: '' };
     // name for the last card tapped
     let lastCard = null;
     if (d.data.lastCard) {
