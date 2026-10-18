@@ -2709,11 +2709,11 @@ app.get('/api/device/display', async (req, res) => {
     let message = null;
     if (noteSnap.docs && noteSnap.docs.length) {
       const n = noteSnap.docs[0].data();
-      message = { title: n.title || '', text: n.description || '', by: n.sentBy || '' };
+      message = { title: n.title || '', text: n.description || '', by: n.sentBy || '', at: n.createdAt ? n.createdAt.toMillis() : 0 };
     }
     // a message the admin typed in Display Setup replaces the notification
     const dm = h.displayMessage ? String(h.displayMessage.text || '').trim() : '';
-    if (dm) message = { title: 'Message', text: dm.slice(0, 42), by: '' };
+    if (dm) message = { title: 'Message', text: dm.slice(0, 42), by: '', at: h.displayMessage.updatedAt ? h.displayMessage.updatedAt.toMillis() : 0 };
     // name for the last card tapped
     let lastCard = null;
     if (d.data.lastCard) {
@@ -2729,6 +2729,7 @@ app.get('/api/device/display', async (req, res) => {
       todayCount: patients.length,
       waiting,
       queueGood: waiting <= 5,
+      storeOpen: isPharmacyOpenNow(h),
       patients: patients.slice(0, 12),
       doctorsPresent: doctors,
       arrivals,
