@@ -2618,6 +2618,12 @@ app.post('/api/device/report', async (req, res) => {
     if (typeof b.status === 'string') upd.status = b.status.slice(0, 120);
     if (typeof b.currentSsid === 'string') upd.currentSsid = b.currentSsid.slice(0, 32);
     if (b.connectApplied) { upd.connectRequest = null; upd.status = 'connected to ' + (b.currentSsid || 'Wi-Fi'); }
+    // the box temperature and humidity go on the hospital record, for the dashboards
+    if (typeof b.boxTemp === 'number' && d.data.hospitalId) {
+      await getAdminDb().collection('hospitals').doc(d.data.hospitalId).set({
+        boxStatus: { name: d.data.name || 'Scanner', temp: b.boxTemp, hum: Number(b.boxHum) || 0, at: admin.firestore.FieldValue.serverTimestamp() }
+      }, { merge: true }).catch(() => {});
+    }
     await d.ref.update(upd);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: 'server error' }); }

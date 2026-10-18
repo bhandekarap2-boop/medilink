@@ -2991,6 +2991,7 @@ async function loadDashboardProfit() {
 }
 
 async function renderAdminDashboard() {
+  loadBoxStatusCard();
   const mc = document.getElementById('mainContent');
   mc.innerHTML = `
     <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px;"><div><h2>Admin Dashboard</h2><p>Overview of your hospital</p></div>${topRightControlsHtml()}</div>
@@ -4554,6 +4555,7 @@ async function saveSettings() {
 
 // ============ DOCTOR PAGES ============
 async function renderDoctorDashboard() {
+  loadBoxStatusCard();
   const mc = document.getElementById('mainContent');
   // Check attendance
   let isPresent = false;
@@ -19295,6 +19297,35 @@ async function devRemove(id) {
   try { await devApi('/api/device-wifi/remove', { deviceId: id }); if (_devPicking && _devPicking.id === id) _devPicking = null; devLoad(); }
   catch (e) { showToast('Error: ' + e.message, 'error'); }
 }
+// ============ BOX STATUS CARD (scanner temperature on the dashboards) ============
+// Shows the scanner's name and its box temperature and humidity at the top of the admin and doctor dashboards.
+function loadBoxStatusCard() {
+  setTimeout(async () => {
+    try {
+      const mc = document.getElementById('mainContent');
+      if (!mc || document.getElementById('boxStatusCard') || !currentHospitalId) return;
+      const snap = await db.collection('hospitals').doc(currentHospitalId).get();
+      const b = snap.exists ? snap.data().boxStatus : null;
+      const card = document.createElement('div');
+      card.id = 'boxStatusCard';
+      card.className = 'table-container';
+      card.style.cssText = 'padding:16px 18px;margin-bottom:16px;';
+      if (!b) {
+        card.innerHTML = '<div style="font-size:.85rem;color:var(--text2);">Scanner box: no reading yet. Connect a scanner to see its temperature.</div>';
+      } else {
+        const when = b.at && b.at.toMillis ? new Date(b.at.toMillis()).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : '';
+        card.innerHTML = '<div style="font-size:.78rem;color:var(--text2);">Scanner box</div>' +
+          '<div style="display:flex;flex-wrap:wrap;gap:18px;align-items:baseline;margin-top:4px;">' +
+          '<strong style="font-size:1.05rem;">' + escHtmlSafe(b.name || 'Scanner') + '</strong>' +
+          '<span>Temperature: <strong>' + Number(b.temp).toFixed(1) + ' °C</strong></span>' +
+          '<span>Humidity: <strong>' + Math.round(Number(b.hum) || 0) + '%</strong></span></div>' +
+          '<div style="font-size:.75rem;color:var(--text2);margin-top:4px;">Updated ' + when + '</div>';
+      }
+      mc.insertBefore(card, mc.firstChild);
+    } catch (e) { /* the dashboard still works without the card */ }
+  }, 400);
+}
+
 // ============ ADMIN: DISPLAY SETUP (scanner screens) ============
 // The MediFlow info screen is always on, so it is not listed here.
 const DS_LIST = [
