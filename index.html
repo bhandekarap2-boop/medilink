@@ -2702,6 +2702,7 @@ function getDefaultSidebarItems() {
       {icon:'🆘', label:'Requests', page:'adminRequests'},
       {icon:'📨', label:'WhatsApp Messages', page:'adminWhatsAppBroadcast'},
       {icon:'🔌', label:'Device Setup', page:'adminDevice'},
+      {icon:'🖥️', label:'Display Setup', page:'adminDisplaySetup'},
       {icon:'⚙️', label:'Settings', page:'settings'},
       {icon:'🎛️', label:'Customization', page:'customization'},
     ],
@@ -2843,6 +2844,7 @@ function navigateTo(page) {
     adminPrintHistory: renderAdminPrintHistory,
     adminManageHospitals: renderAdminManageHospitals,
     adminDevice: renderAdminDevice,
+    adminDisplaySetup: renderAdminDisplaySetup,
     superRecords: renderSuperRecords,
     superVideos: renderSuperVideos,
     adminQRPayment: renderAdminQRPayment,
@@ -19197,7 +19199,7 @@ function renderAdminDevice() {
   _devPollTimer = setInterval(() => {
     if (window._currentPage !== 'adminDevice') { clearInterval(_devPollTimer); return; }
     // pause the refresh while the password box is being typed in
-    const typing = _devPicking && document.activeElement && document.activeElement.id === 'devPw_' + _devPicking.id;
+    const typing = !!_devPicking;   // pause the refresh while a network is selected
     // refresh every second while a scan is running, otherwise every 4 seconds
     const scanning = Date.now() < window._devFastUntil;
     if (!typing && Date.now() - (window._devLastLoad || 0) >= (scanning ? 1000 : 4000)) devLoad();
@@ -19270,7 +19272,12 @@ function devPick(id, ssid) {
   box.innerHTML = '<div style="font-weight:700;margin-bottom:6px;">Connect to ' + escHtmlSafe(ssid) + ' (2.4 GHz)</div>' +
     '<div style="display:flex;gap:6px;margin-bottom:8px;"><input id="devPw_' + id + '" type="password" placeholder="Wi‑Fi password (leave empty for open networks)" style="flex:1;" autocomplete="off"/>' +
     '<button type="button" class="btn btn-secondary btn-sm" style="width:auto;" onclick="devTogglePw(\'' + id + '\')">Show</button></div>' +
-    '<button class="btn btn-success" style="width:auto;" onclick="devConnect(\'' + id + '\',\'' + ssid.replace(/'/g, '') + '\')">Connect scanner</button>';
+    '<div style="display:flex;gap:8px;"><button class="btn btn-success" style="width:auto;" onclick="devConnect(\'' + id + '\',\'' + ssid.replace(/'/g, '') + '\')">Connect scanner</button>' +
+    '<button class="btn btn-secondary" style="width:auto;" onclick="devCancelPick()">Cancel</button></div>';
+}
+function devCancelPick() {
+  _devPicking = null;
+  devLoad();
 }
 function devTogglePw(id) {
   const inp = document.getElementById('devPw_' + id);
@@ -19288,6 +19295,39 @@ async function devRemove(id) {
   try { await devApi('/api/device-wifi/remove', { deviceId: id }); if (_devPicking && _devPicking.id === id) _devPicking = null; devLoad(); }
   catch (e) { showToast('Error: ' + e.message, 'error'); }
 }
+// ============ ADMIN: DISPLAY SETUP (scanner screens) ============
+const DS_LIST = [
+  { key: 'patients', label: "Today's patients" },
+  { key: 'queue', label: 'Queue status (GOOD / BUSY)' },
+  { key: 'doctors', label: 'Doctors present and arrivals' },
+  { key: 'temp', label: 'Temperature (city and box)' },
+  { key: 'message', label: 'Messages from the app' },
+  { key: 'pharmacy', label: 'Medical store alerts' },
+  { key: 'card', label: 'Last card scanned' },
+  { key: 'credit', label: 'MediFlow info screen' }
+];
+async function renderAdminDisplaySetup() {
+  const mc = document.getElementById('mainContent');
+  mc.innerHTML = '<div class="page-header"><h2>Display Setup</h2><p>Choose which screens show on the scanner display. The top bar and the MediFlow name always show.</p></div>' +
+    '<div class="table-container" style="padding:20px;max-width:640px;"><div id="dsList"><div class="empty-state"><p>Loading…</p></div></div>' +
+    '<button class="btn btn-primary" style="width:auto;margin-top:14px;" onclick="saveDisplaySetup()">Save</button></div>';
+  try {
+    const snap = await db.collection('hospitals').doc(currentHospitalId).get();
+    const cur = (snap.exists && snap.data().displayScreens) || {};
+    document.getElementById('dsList').innerHTML = DS_LIST.map(s =>
+      '<label style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--border);">' +
+      '<input type="checkbox" id="ds_' + s.key + '" ' + (cur[s.key] !== false ? 'checked' : '') + ' style="width:auto;"/> ' + s.label + '</label>').join('');
+  } catch (e) { showToast('Could not load: ' + e.message, 'error'); }
+}
+async function saveDisplaySetup() {
+  const screens = {};
+  DS_LIST.forEach(s => { screens[s.key] = document.getElementById('ds_' + s.key).checked; });
+  try {
+    await db.collection('hospitals').doc(currentHospitalId).update({ displayScreens: screens });
+    showToast('Display settings saved', 'success');
+  } catch (e) { showToast('Could not save: ' + e.message, 'error'); }
+}
+
 // ============ OWNER: FULL CONTROL OF A HOSPITAL ============
 // Every switch a hospital admin has in their own Settings, flipped remotely from here.
 function openHospitalControls(hid) {

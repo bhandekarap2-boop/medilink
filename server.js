@@ -2726,6 +2726,7 @@ app.get('/api/device/display', async (req, res) => {
       pharmacy: { lowStock, expiring, good: lowStock === 0 && expiring === 0 },
       message,
       lastCard,
+      screens: h.displayScreens || {},
       generatedAt: Date.now()
     });
   } catch (e) { console.error('display endpoint failed:', e.message); res.status(500).json({ error: 'server error' }); }
