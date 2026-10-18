@@ -2681,14 +2681,20 @@ app.get('/api/device/display', async (req, res) => {
     const hospSnap = await db.collection('hospitals').doc(hid).get();
     const h = hospSnap.exists ? hospSnap.data() : {};
     // city = the first part of the address line 2 ("City, State, PIN")
-    const city = String(h.address2 || '').split(',')[0].trim();
-    const [wx, apptSnap, attSnap, medSnap, noteSnap] = await Promise.all([
+    const city = String(h.address2 || '').split(',')[0].trim() || String(h.address1 || '').split(',').pop().trim();
+    const [wx, apptSnap, attSnap, medSnap, noteSnap, queueSnap] = await Promise.all([
       cityWeather(city),
       db.collection('hospitals/' + hid + '/appointments').where('appointmentDate', '==', today).get(),
       db.collection('hospitals/' + hid + '/attendance').where('date', '==', today).get(),
       db.collection('hospitals/' + hid + '/medicines').get(),
-      db.collection('hospitals/' + hid + '/notifications').orderBy('createdAt', 'desc').limit(1).get().catch(() => ({ docs: [] }))
+      db.collection('hospitals/' + hid + '/notifications').orderBy('createdAt', 'desc').limit(1).get().catch(() => ({ docs: [] })),
+      db.collection('hospitals/' + hid + '/queue').where('date', '==', today).get().catch(() => ({ docs: [] }))
     ]);
+    const qList = queueSnap.docs.map(x => x.data()).sort((a, b) => (a.token || 0) - (b.token || 0));
+    const servingQ = qList.find(q => q.status === 'serving');
+    const nextQ = qList.find(q => q.status === 'waiting');
+    const called = servingQ ? { name: servingQ.patientName || 'Patient', token: servingQ.token || null } : null;
+    const next = nextQ ? { name: nextQ.patientName || 'Patient', token: nextQ.token || null } : null;
     const patients = apptSnap.docs.map(x => x.data()).filter(a => a.status !== 'cancelled')
       .sort((a, b) => (a.token || 0) - (b.token || 0))
       .map(a => ({ name: a.patientName || 'Patient', token: a.token || null, doctor: a.doctorName || '', status: a.status || '' }));
@@ -2730,6 +2736,8 @@ app.get('/api/device/display', async (req, res) => {
       waiting,
       queueGood: waiting <= 5,
       storeOpen: isPharmacyOpenNow(h),
+      called: called,
+      next: next,
       patients: patients.slice(0, 12),
       doctorsPresent: doctors,
       arrivals,
