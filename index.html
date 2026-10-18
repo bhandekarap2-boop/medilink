@@ -19198,8 +19198,10 @@ function renderAdminDevice() {
     if (window._currentPage !== 'adminDevice') { clearInterval(_devPollTimer); return; }
     // pause the refresh while the password box is being typed in
     const typing = _devPicking && document.activeElement && document.activeElement.id === 'devPw_' + _devPicking.id;
-    if (!typing) devLoad();
-  }, 4000);
+    // refresh every second while a scan is running, otherwise every 4 seconds
+    const scanning = Date.now() < window._devFastUntil;
+    if (!typing && Date.now() - (window._devLastLoad || 0) >= (scanning ? 1000 : 4000)) devLoad();
+  }, 1000);
 }
 async function devAddDevice() {
   const name = (document.getElementById('devName').value || '').trim();
@@ -19217,6 +19219,7 @@ async function devAddDevice() {
 }
 async function devLoad() {
   if (!document.getElementById('devList')) return;
+  window._devLastLoad = Date.now();
   try {
     const d = await devApi('/api/device-wifi/list');
     const el = document.getElementById('devList');
@@ -19257,7 +19260,7 @@ async function devLoad() {
   } catch (e) { /* page may have changed */ }
 }
 async function devScan(id) {
-  try { await devApi('/api/device-wifi/scan', { deviceId: id }); showToast('Scanning — the list will appear shortly', 'success'); devLoad(); }
+  try { await devApi('/api/device-wifi/scan', { deviceId: id }); window._devFastUntil = Date.now() + 60000; showToast('Scanning — the list will appear shortly', 'success'); devLoad(); }
   catch (e) { showToast('Error: ' + e.message, 'error'); }
 }
 function devPick(id, ssid) {
