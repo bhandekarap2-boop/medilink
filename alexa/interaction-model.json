@@ -1,0 +1,284 @@
+{
+  "interactionModel": {
+    "languageModel": {
+      "invocationName": "medi flow",
+      "intents": [
+        {
+          "name": "AMAZON.CancelIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.HelpIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.StopIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.YesIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.NoIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.FallbackIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.NavigateHomeIntent",
+          "samples": []
+        },
+        {
+          "name": "BookAppointmentIntent",
+          "slots": [
+            {
+              "name": "doctorName",
+              "type": "DOCTOR_NAME"
+            },
+            {
+              "name": "date",
+              "type": "AMAZON.DATE"
+            },
+            {
+              "name": "time",
+              "type": "AMAZON.TIME"
+            }
+          ],
+          "samples": [
+            "book an appointment",
+            "book appointment",
+            "i want to book an appointment",
+            "make an appointment",
+            "book a doctor",
+            "book an appointment with doctor {doctorName}",
+            "book appointment with dr {doctorName}",
+            "book an appointment with doctor {doctorName} {date}",
+            "book an appointment for {date}",
+            "doctor {doctorName}",
+            "dr {doctorName}",
+            "{doctorName}",
+            "with doctor {doctorName}",
+            "{date}",
+            "for {date}",
+            "on {date}",
+            "{date} at {time}",
+            "at {time}",
+            "{time}"
+          ]
+        },
+        {
+          "name": "ChooseSlotIntent",
+          "slots": [
+            {
+              "name": "ordinal",
+              "type": "AMAZON.Ordinal"
+            },
+            {
+              "name": "choice",
+              "type": "AMAZON.NUMBER"
+            }
+          ],
+          "samples": [
+            "the {ordinal} one",
+            "{ordinal}",
+            "the {ordinal}",
+            "option {choice}",
+            "number {choice}",
+            "slot {choice}"
+          ]
+        },
+        {
+          "name": "MyAppointmentsIntent",
+          "slots": [],
+          "samples": [
+            "my appointments",
+            "what are my appointments",
+            "do i have an appointment",
+            "when is my next appointment",
+            "my next appointment",
+            "upcoming appointments"
+          ]
+        },
+        {
+          "name": "CancelAppointmentIntent",
+          "slots": [],
+          "samples": [
+            "cancel my appointment",
+            "cancel my next appointment",
+            "cancel appointment",
+            "i want to cancel my appointment"
+          ]
+        },
+        {
+          "name": "MyTokenIntent",
+          "slots": [],
+          "samples": [
+            "what is my token",
+            "my token number",
+            "what is my token number",
+            "my queue number",
+            "what is my number today"
+          ]
+        },
+        {
+          "name": "HospitalInfoIntent",
+          "slots": [],
+          "samples": [
+            "hospital timings",
+            "what are the hospital timings",
+            "what are the opd timings",
+            "opd timings",
+            "where is the hospital",
+            "hospital address",
+            "hospital phone number",
+            "tell me about the hospital"
+          ]
+        },
+        {
+          "name": "DoctorsIntent",
+          "slots": [],
+          "samples": [
+            "which doctors are available",
+            "list the doctors",
+            "who are the doctors",
+            "show doctors",
+            "doctors list",
+            "which doctor is available today",
+            "which doctors are available today",
+            "which doctors are here today",
+            "who is available today",
+            "doctors available today",
+            "is any doctor available today",
+            "which doctor is present today",
+            "show doctors today"
+          ]
+        },
+        {
+          "name": "OrderStatusIntent",
+          "slots": [],
+          "samples": [
+            "where is my medicine order",
+            "status of my medicine order",
+            "my medicine order",
+            "where is my order",
+            "track my medicine order"
+          ]
+        },
+        {
+          "name": "PrescriptionIntent",
+          "slots": [],
+          "samples": [
+            "my prescription",
+            "what are my medicines",
+            "what medicines did the doctor give me",
+            "show my prescription",
+            "read my prescription",
+            "what tablets should i take"
+          ]
+        },
+        {
+          "name": "BillIntent",
+          "slots": [],
+          "samples": [
+            "my bill",
+            "how much is my bill",
+            "what is my bill",
+            "do i have any bills",
+            "is my bill paid",
+            "show my bill"
+          ]
+        }
+      ],
+      "types": [
+        {
+          "name": "DOCTOR_NAME",
+          "values": [
+            {
+              "name": {
+                "value": "sharma"
+              }
+            },
+            {
+              "name": {
+                "value": "rao"
+              }
+            },
+            {
+              "name": {
+                "value": "patil"
+              }
+            },
+            {
+              "name": {
+                "value": "khan"
+              }
+            },
+            {
+              "name": {
+                "value": "shah"
+              }
+            },
+            {
+              "name": {
+                "value": "kumar"
+              }
+            },
+            {
+              "name": {
+                "value": "singh"
+              }
+            },
+            {
+              "name": {
+                "value": "gupta"
+              }
+            },
+            {
+              "name": {
+                "value": "mehta"
+              }
+            },
+            {
+              "name": {
+                "value": "desai"
+              }
+            },
+            {
+              "name": {
+                "value": "joshi"
+              }
+            },
+            {
+              "name": {
+                "value": "verma"
+              }
+            },
+            {
+              "name": {
+                "value": "reddy"
+              }
+            },
+            {
+              "name": {
+                "value": "iyer"
+              }
+            },
+            {
+              "name": {
+                "value": "nair"
+              }
+            },
+            {
+              "name": {
+                "value": "bhandekar"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
