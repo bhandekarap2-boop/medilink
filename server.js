@@ -2734,6 +2734,17 @@ app.get('/api/device/display', async (req, res) => {
     // a message the admin typed in Display Setup replaces the notification
     const dm = h.displayMessage ? String(h.displayMessage.text || '').trim() : '';
     if (dm) message = { title: 'Message', text: dm.slice(0, 42), by: '', at: h.displayMessage.updatedAt ? h.displayMessage.updatedAt.toMillis() : 0 };
+    // payments: the latest bill marked paid (by the admin or the doctor), and how many bills are still unpaid
+    const paidSnap = await db.collection('hospitals/' + hid + '/bills').orderBy('paidAt', 'desc').limit(1).get().catch(() => ({ docs: [] }));
+    const unpaidSnap = await db.collection('hospitals/' + hid + '/bills').where('paid', '==', false).limit(100).get().catch(() => ({ docs: [] }));
+    let payment = null;
+    if (paidSnap.docs.length) {
+      const pb = paidSnap.docs[0].data();
+      if (pb.paid === true && pb.paidAt && pb.paidAt.toMillis) {
+        payment = { name: pb.patientName || 'Patient', amount: Number(pb.total) || 0, at: pb.paidAt.toMillis() };
+      }
+    }
+    const pendingBills = unpaidSnap.docs.length;
     // name for the last card tapped
     let lastCard = null;
     if (d.data.lastCard) {
@@ -2750,6 +2761,8 @@ app.get('/api/device/display', async (req, res) => {
       waiting,
       queueGood: waiting <= 5,
       storeOpen: isPharmacyOpenNow(h),
+      payment: payment,
+      pendingBills: pendingBills,
       called: called,
       next: next,
       patients: patients.slice(0, 12),
