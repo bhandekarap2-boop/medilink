@@ -2672,6 +2672,18 @@ async function cityWeather(city) {
     return w;
   } catch (e) { return null; }
 }
+// Possible city names from the hospital's address: the first part of address line 2 (City, State, PIN),
+// then the parts of the full address, from the nearest to the area name backwards. Digits are removed.
+function cityCandidates(h) {
+  const clean = t => String(t || '').replace(/[0-9]/g, '').replace(/\s+/g, ' ').trim();
+  const out = [];
+  const a2 = String(h.address2 || '').split(',').map(clean).filter(Boolean);
+  if (a2.length) out.push(a2[0]);
+  const full = [h.address1, h.address].map(x => String(x || '').split(',').map(clean).filter(Boolean)).find(p => p.length) || [];
+  for (let i = full.length - 2; i >= 0; i--) out.push(full[i]);
+  if (full.length) out.push(full[full.length - 1]);
+  return [...new Set(out)].filter(Boolean).slice(0, 5);
+}
 app.get('/api/device/display', async (req, res) => {
   try {
     const d = await devAuth(req, res); if (!d) return;
@@ -2681,9 +2693,11 @@ app.get('/api/device/display', async (req, res) => {
     const hospSnap = await db.collection('hospitals').doc(hid).get();
     const h = hospSnap.exists ? hospSnap.data() : {};
     // city = the first part of the address line 2 ("City, State, PIN")
-    const city = String(h.address2 || '').split(',')[0].trim() || String(h.address1 || '').split(',').pop().trim();
-    const [wx, apptSnap, attSnap, medSnap, noteSnap, queueSnap] = await Promise.all([
-      cityWeather(city),
+    const cands = cityCandidates(h);
+    let city = cands[0] || '';
+    let wx = null;
+    for (const c of cands) { const w = await cityWeather(c); if (w) { wx = w; city = c; break; } }
+    const [apptSnap, attSnap, medSnap, noteSnap, queueSnap] = await Promise.all([
       db.collection('hospitals/' + hid + '/appointments').where('appointmentDate', '==', today).get(),
       db.collection('hospitals/' + hid + '/attendance').where('date', '==', today).get(),
       db.collection('hospitals/' + hid + '/medicines').get(),
