@@ -2703,6 +2703,7 @@ function getDefaultSidebarItems() {
       {icon:'📨', label:'WhatsApp Messages', page:'adminWhatsAppBroadcast'},
       {icon:'🔌', label:'Device Setup', page:'adminDevice'},
       {icon:'🖥️', label:'Display Setup', page:'adminDisplaySetup'},
+      {icon:'🛵', label:'Delivery Boys', page:'adminDeliveryBoys'},
       {icon:'⚙️', label:'Settings', page:'settings'},
       {icon:'🎛️', label:'Customization', page:'customization'},
     ],
@@ -2845,6 +2846,7 @@ function navigateTo(page) {
     adminManageHospitals: renderAdminManageHospitals,
     adminDevice: renderAdminDevice,
     adminDisplaySetup: renderAdminDisplaySetup,
+    adminDeliveryBoys: renderAdminDeliveryBoys,
     superRecords: renderSuperRecords,
     superVideos: renderSuperVideos,
     adminQRPayment: renderAdminQRPayment,
@@ -19420,6 +19422,86 @@ async function saveDisplaySetup() {
     });
     showToast('Display settings saved', 'success');
   } catch (e) { showToast('Could not save: ' + e.message, 'error'); }
+}
+
+// ============ ADMIN: DELIVERY BOYS (accounts, on/off, task assignment) ============
+async function renderAdminDeliveryBoys() {
+  const mc = document.getElementById('mainContent');
+  mc.innerHTML = '<div class="page-header"><h2>Delivery Boys</h2><p>Create delivery boy accounts, switch them on or off, and assign medicine deliveries.</p></div>' +
+    '<div class="table-container" style="padding:20px;margin-bottom:16px;max-width:720px;">' +
+    '<div class="section-title">Create a delivery boy account</div>' +
+    '<div class="form-group"><label>Full name</label><input id="dbName" placeholder="e.g. Ravi Kumar"/></div>' +
+    '<div class="form-group"><label>Email</label><input id="dbEmail" type="email" placeholder="ravi@example.com"/></div>' +
+    '<div class="form-group"><label>Username (for the delivery login)</label><input id="dbUser" placeholder="ravi"/></div>' +
+    '<div class="form-group"><label>Password</label><input id="dbPass" type="password" placeholder="At least 6 characters"/></div>' +
+    '<button class="btn btn-primary" style="width:auto;" onclick="createDeliveryBoy()">Create account</button></div>' +
+    '<div class="table-container" style="padding:20px;max-width:720px;"><div class="section-title">Delivery boys</div><div id="dbList"><div class="empty-state"><p>Loading…</p></div></div></div>';
+  loadDeliveryBoys();
+}
+
+async function createDeliveryBoy() {
+  const name = (document.getElementById('dbName').value || '').trim();
+  const email = (document.getElementById('dbEmail').value || '').trim().toLowerCase();
+  const user = (document.getElementById('dbUser').value || '').trim().toLowerCase();
+  const pass = document.getElementById('dbPass').value || '';
+  if (!name || !email || !user || pass.length < 6) { showToast('Fill every field. The password needs 6 characters.', 'error'); return; }
+  if (!/^[a-z0-9_.-]{3,20}$/.test(user)) { showToast('Username: 3 to 20 letters, numbers, dot, dash or underscore', 'error'); return; }
+  try {
+    const dup = await db.collection('hospitals/' + currentHospitalId + '/deliveryBoys').where('username', '==', user).limit(1).get();
+    if (!dup.empty) { showToast('That username is already used', 'error'); return; }
+    await db.collection('hospitals/' + currentHospitalId + '/deliveryBoys').add({
+      name: name, email: email, username: user, passwordHash: await pwHash(pass), active: true,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+    ['dbName', 'dbEmail', 'dbUser', 'dbPass'].forEach(id => { document.getElementById(id).value = ''; });
+    showToast('Delivery boy account created', 'success');
+    loadDeliveryBoys();
+  } catch (e) { showToast('Could not create: ' + e.message, 'error'); }
+}
+
+async function loadDeliveryBoys() {
+  const el = document.getElementById('dbList');
+  if (!el) return;
+  try {
+    const snap = await db.collection('hospitals/' + currentHospitalId + '/deliveryBoys').get();
+    if (snap.empty) { el.innerHTML = '<div class="empty-state"><p>No delivery boys yet. Create one above.</p></div>'; return; }
+    el.innerHTML = snap.docs.map(d => {
+      const b = d.data();
+      const on = !!b.active;
+      return '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 0;border-bottom:1px solid var(--border);">' +
+        '<div><strong>' + escHtmlSafe(b.name || '') + '</strong> <span style="color:var(--text2);font-size:.8rem;">@' + escHtmlSafe(b.username || '') + ' · ' + escHtmlSafe(b.email || '') + '</span>' +
+        '<div style="font-size:.8rem;color:' + (on ? 'var(--green)' : 'var(--orange)') + ';">' + (on ? 'On duty' : 'Off duty') + '</div></div>' +
+        '<div style="display:flex;gap:6px;flex-wrap:wrap;">' +
+        '<button class="btn btn-secondary btn-sm" style="width:auto;" onclick="toggleDeliveryBoy(&quot;' + d.id + '&quot;,' + (!on) + ')">' + (on ? 'Switch off' : 'Switch on') + '</button>' +
+        '<button class="btn btn-primary btn-sm" style="width:auto;" onclick="assignDeliveryTask(&quot;' + d.id + '&quot;,&quot;' + escHtmlSafe(b.username || '') + '&quot;)">Assign a delivery</button>' +
+        '</div></div>';
+    }).join('');
+  } catch (e) { el.innerHTML = '<div class="empty-state"><p>Could not load: ' + escHtmlSafe(e.message) + '</p></div>'; }
+}
+
+async function toggleDeliveryBoy(id, on) {
+  try {
+    await db.collection('hospitals/' + currentHospitalId + '/deliveryBoys').doc(id).update({ active: on });
+    loadDeliveryBoys();
+  } catch (e) { showToast('Could not update: ' + e.message, 'error'); }
+}
+
+// Picks the first home-delivery order that is not yet assigned, and sends the boy a notification
+async function assignDeliveryTask(boyId, username) {
+  try {
+    const snap = await db.collection('hospitals/' + currentHospitalId + '/pharmacyOrders').where('fulfillment', '==', 'delivery').where('status', '==', 'pending').limit(20).get();
+    const open = snap.docs.filter(d => !d.data().assignedTo);
+    if (!open.length) { showToast('No unassigned delivery orders right now', 'error'); return; }
+    const order = open[0];
+    const o = order.data();
+    const to = (o.patientName || 'patient') + ' - ' + (o.deliveryAddress || 'address not given');
+    await order.ref.update({ assignedTo: boyId, assignedToName: username, assignedAt: firebase.firestore.FieldValue.serverTimestamp() });
+    await db.collection('hospitals/' + currentHospitalId + '/notifications').add({
+      title: 'New delivery task', description: 'Deliver to ' + to, link: '', target: 'delivery:' + username,
+      sentBy: currentUser.name || 'Admin', createdAt: firebase.firestore.FieldValue.serverTimestamp(), date: todayStr()
+    });
+    showToast('Delivery assigned to @' + username, 'success');
+  } catch (e) { showToast('Could not assign: ' + e.message, 'error'); }
 }
 
 // ============ OWNER: FULL CONTROL OF A HOSPITAL ============
