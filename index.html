@@ -3696,6 +3696,21 @@ async function generateReportSummaryAI() {
   await callAiAssist('reportSummary', { statsText }, 'aiReportSummaryResult');
 }
 
+function useThisPhoneAsStore() {
+  if (!navigator.geolocation) { showToast('Location is not available on this device', 'error'); return; }
+  navigator.geolocation.getCurrentPosition(pos => {
+    document.getElementById('settStoreLat').value = pos.coords.latitude.toFixed(6);
+    document.getElementById('settStoreLng').value = pos.coords.longitude.toFixed(6);
+    showToast('Store location set. Press Save.', 'success');
+  }, () => showToast('Could not read the location. Type it in instead.', 'error'), { enableHighAccuracy: true });
+}
+// straight-line distance in kilometres between two points
+function kmBetweenPoints(lat1, lng1, lat2, lng2) {
+  const R = 6371, toRad = d => d * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1), dLng = toRad(lng2 - lng1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
 async function renderSettings() {
   const mc = document.getElementById('mainContent');
   const settSnap = await db.collection('hospitals').doc(currentHospitalId).get();
@@ -3770,6 +3785,14 @@ async function renderSettings() {
         <div class="form-group"><label>Hospital Code</label><input id="settHospCode" value="${currentHospitalId}" disabled style="opacity:.5"/></div>
         <div class="form-group"><label>Address Line 1</label><input id="settAddr1" value="${sett.address1||''}" placeholder="Building, Street"/></div>
         <div class="form-group"><label>Address Line 2</label><input id="settAddr2" value="${sett.address2||''}" placeholder="City, State, PIN"/></div>
+        <div class="form-group"><label>Store location (for delivery distance)</label>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <input id="settStoreLat" type="number" step="0.000001" value="${sett.storeLat||''}" placeholder="Latitude" style="flex:1;min-width:120px;"/>
+            <input id="settStoreLng" type="number" step="0.000001" value="${sett.storeLng||''}" placeholder="Longitude" style="flex:1;min-width:120px;"/>
+            <button type="button" class="btn btn-secondary btn-sm" style="width:auto;" onclick="useThisPhoneAsStore()">Use this location</button>
+          </div></div>
+        <div class="form-group"><label>Delivery charge per kilometre (Rs)</label><input id="settDeliveryPerKm" type="number" min="0" step="1" value="${sett.deliveryRatePerKm||''}" placeholder="e.g. 10"/></div>
+
         <div class="form-group"><label>Phone</label><input id="settPhone" value="${sett.phone||''}" placeholder="+91 XXXXX XXXXX"/></div>
         <div class="form-group"><label>Email</label><input id="settEmail" value="${sett.email||''}" placeholder="hospital@email.com"/></div>
         <div class="form-group"><label>Website</label><input id="settWeb" value="${sett.website||''}" placeholder="www.hospital.com"/></div>
@@ -4483,6 +4506,9 @@ async function saveSettings() {
     name,
     address1: getVal('settAddr1'),
     address2: getVal('settAddr2'),
+    storeLat: getNum('settStoreLat') || null,
+    storeLng: getNum('settStoreLng') || null,
+    deliveryRatePerKm: getNum('settDeliveryPerKm') || 0,
     phone: getVal('settPhone'),
     email: getVal('settEmail'),
     website: getVal('settWeb'),
@@ -5662,6 +5688,7 @@ async function loadPatMedCatalog() {
     _patMedCatalog = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     const hd = hospSnap.exists ? hospSnap.data() : {};
     currentHospitalPharmacyDeliveryChargePat = hd.pharmacyDeliveryCharge || 0;
+    currentHospitalStorePat = (hd.storeLat && hd.storeLng && hd.deliveryRatePerKm) ? { lat: hd.storeLat, lng: hd.storeLng, rate: hd.deliveryRatePerKm } : null;
     currentHospitalGstPercentPat = (getCustomization('medStoreShowGST') && hd.gstPercent) ? hd.gstPercent : 0;
     _patMedStoreOpen = isPharmacyOpenNow(hd);
     const bannerEl = document.getElementById('patMedClosedBanner');
@@ -5829,7 +5856,7 @@ function renderPatMedCart() {
   const t = computePatMedTotals();
   totalEl.innerHTML = 'Subtotal: ₹' + t.subtotal + '<br>' +
     (t.gstAmount ? 'GST (' + t.gstPercent + '%): +₹' + t.gstAmount + '<br>' : '') +
-    (t.deliveryCharge ? 'Delivery: ₹' + t.deliveryCharge + '<br>' : '') +
+    (t.deliveryCharge ? 'Delivery: ₹' + t.deliveryCharge + (t.deliveryKm ? ' (' + t.deliveryKm + ' km × ₹' + (currentHospitalStorePat ? currentHospitalStorePat.rate : '') + ')' : '') + '<br>' : '') +
     '<strong style="font-size:1.05rem;">Total: ₹' + t.total + '</strong>';
 }
 // Shared by the cart preview and submitPatMedOrder so the price shown while shopping is exactly
@@ -5837,13 +5864,25 @@ function renderPatMedCart() {
 // every in-person Medical Store sale already is, so an online order isn't quietly tax-free.
 function computePatMedTotals() {
   const subtotal = _patMedCart.reduce((s,c) => s + c.subtotal, 0);
-  const deliveryCharge = _patMedFulfillment === 'delivery' ? (currentHospitalPharmacyDeliveryChargePat || 0) : 0;
+  let deliveryCharge = 0;
+  _patMedKm = null;
+  if (_patMedFulfillment === 'delivery') {
+    const addr = resolveDeliveryAddress();
+    if (currentHospitalStorePat && addr && addr.lat && addr.lng) {
+      _patMedKm = Math.round(kmBetweenPoints(currentHospitalStorePat.lat, currentHospitalStorePat.lng, addr.lat, addr.lng) * 10) / 10;
+      deliveryCharge = Math.ceil(_patMedKm * currentHospitalStorePat.rate);
+    } else {
+      deliveryCharge = currentHospitalPharmacyDeliveryChargePat || 0;
+    }
+  }
   const gstPercent = currentHospitalGstPercentPat || 0;
   const gstAmount = Math.round(subtotal * gstPercent) / 100;
   const total = Math.round((subtotal + gstAmount + deliveryCharge) * 100) / 100;
-  return { subtotal, gstPercent, gstAmount, deliveryCharge, total };
+  return { subtotal, gstPercent, gstAmount, deliveryCharge, total, deliveryKm: _patMedKm };
 }
 let currentHospitalPharmacyDeliveryChargePat = 0;
+let currentHospitalStorePat = null;   // { lat, lng, rate } when the store has set a per-km charge
+let _patMedKm = null;                 // distance of the chosen delivery address, for the cart and the order
 let currentHospitalGstPercentPat = 0;
 async function submitPatMedOrder() {
   if (!_patMedCart.length) { showToast('Your cart is empty', 'error'); return; }
@@ -5865,6 +5904,7 @@ async function submitPatMedOrder() {
       fulfillment: _patMedFulfillment,
       deliveryAddress: delAddr ? delAddr.address : '',
       deliveryLat: delAddr ? delAddr.lat : null, deliveryLng: delAddr ? delAddr.lng : null,
+      deliveryKm: t.deliveryKm, deliveryRatePerKm: currentHospitalStorePat ? currentHospitalStorePat.rate : null,
       deliveryLabel: delAddr ? delAddr.label : '',
       status: 'pending', paymentStatus: 'awaiting_payment',
       createdAt: firebase.firestore.FieldValue.serverTimestamp()
