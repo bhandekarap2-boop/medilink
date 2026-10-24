@@ -19887,6 +19887,7 @@ function deliveryOrderCardHtml(id, o) {
       '<button class="btn btn-primary btn-sm" style="width:auto;" onclick="showDeliveryRoute(\'' + id + '\',' + (hasPin ? o.deliveryLat + ',' + o.deliveryLng : 'null,null') + ')">📍 Show route</button>' +
       '<a href="' + mapsFallback + '" class="btn btn-secondary btn-sm" style="text-decoration:none;">Open in Google Maps</a></div>' +
       '<div id="map_' + id + '"></div>' : '') +
+    deliveryBoyButtonsHtml(id, o) +
     deliveryRatingsHtml(o) + '</div>';
 }
 
@@ -19916,6 +19917,143 @@ function showDeliveryRoute(orderId, dLat, dLng) {
     () => { if (info) info.textContent = 'Turn on location to see where you are. The patient pin is shown.'; },
     { enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 }
   );
+}
+
+// ============ DELIVERY BOY: BARCODE SCANS AND THE DELIVERY STEPS ============
+// Before he can mark out for delivery, every product is scanned (pickup scan).
+// At the doorstep, every product is scanned again before he collects payment (doorstep scan).
+// Each scan is saved on the order. Marking shipped needs no scan.
+function orderItemNames(o) { return (o.medicines || []).map(m => m.name || m.medicineName).filter(Boolean); }
+
+// The one button the delivery boy needs next for this order
+function deliveryBoyButtonsHtml(id, o) {
+  if (o.status === 'fulfilled' || o.status === 'cancelled' || o.deliveryStatus === 'delivered') return '';
+  const total = orderItemNames(o).length;
+  const pickup = (o.pickupScans || []).length;
+  const door = (o.doorScans || []).length;
+  const sid = "'" + id + "'";
+  const row = html => '<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">' + html + '</div>';
+  const btn = (cls, fn, label) => '<button class="btn ' + cls + ' btn-sm" style="width:auto;" onclick="' + fn + '">' + label + '</button>';
+  if (o.deliveryStatus === 'code_sent') {
+    return row(btn('btn-primary', 'promptDeliveryCode(' + sid + ')', '✅ Enter code — mark delivered') + btn('btn-secondary', 'resendDeliveryCode(' + sid + ')', '📤 Resend code'));
+  }
+  if (o.deliveryStatus === 'shipped') {
+    if (door < total) return row(btn('btn-primary', 'openBoyScan(' + sid + ',\'door\')', '📷 Scan at doorstep (' + door + '/' + total + ')'));
+    if (o.paymentStatus === 'approved') return row(btn('btn-primary', 'sendDeliveryCodeAndAdvance(' + sid + ')', '📤 Send delivery code'));
+    return row(btn('btn-primary', 'openCollectDeliveryPayment(' + sid + ')', '💰 Collect payment'));
+  }
+  if (o.deliveryStatus === 'out_for_delivery') return row(btn('btn-primary', 'markShipped(' + sid + ')', '📍 Mark shipped — nearby'));
+  if (pickup < total) return row(btn('btn-primary', 'openBoyScan(' + sid + ',\'pickup\')', '📷 Scan product barcodes (' + pickup + '/' + total + ')'));
+  return row(btn('btn-primary', 'markOutForDelivery(' + sid + ')', '🚚 Mark out for delivery'));
+}
+
+let _boyScan = { orderId: null, phase: null, stream: null, timer: null, camera: false };
+
+function boyScanField() { return _boyScan.phase === 'door' ? 'doorScans' : 'pickupScans'; }
+
+async function openBoyScan(orderId, phase) {
+  _boyScan = { orderId: orderId, phase: phase, stream: null, timer: null, camera: false };
+  if (!document.getElementById('boyScanOverlay')) {
+    document.body.insertAdjacentHTML('beforeend',
+      '<div id="boyScanOverlay" style="position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:16px;">' +
+      '<div id="boyScanBox" style="background:var(--surface2);border-radius:14px;padding:18px;max-width:420px;width:100%;max-height:90vh;overflow:auto;"></div></div>');
+  }
+  document.getElementById('boyScanOverlay').style.display = 'flex';
+  await renderBoyScan();
+}
+
+function setBoyScanMsg(text) {
+  const el = document.getElementById('boyScanMsg');
+  if (el) el.textContent = text;
+}
+
+async function renderBoyScan() {
+  const box = document.getElementById('boyScanBox');
+  if (!box || !_boyScan.orderId) return;
+  const o = (await db.collection('hospitals/' + currentHospitalId + '/pharmacyOrders').doc(_boyScan.orderId).get()).data() || {};
+  const names = orderItemNames(o);
+  const done = o[boyScanField()] || [];
+  const next = done.length < names.length ? names[done.length] : null;
+  const title = _boyScan.phase === 'door' ? 'Scan at the doorstep' : 'Scan the product barcodes';
+  box.innerHTML =
+    '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;"><strong>' + title + '</strong>' +
+    '<button class="btn btn-secondary btn-sm" style="width:auto;" onclick="closeBoyScan()">Close</button></div>' +
+    '<div style="font-size:.85rem;color:var(--text2);margin-top:6px;">' + (next ? 'Scan the barcode of: <strong>' + escHtmlSafe(next) + '</strong>' : '✅ All ' + names.length + ' products scanned') + '</div>' +
+    '<div style="margin-top:10px;">' + names.map((n, i) => '<div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:.9rem;">' +
+      (i < done.length ? '✅ ' : '⬜ ') + escHtmlSafe(n) + (i < done.length ? ' <span style="font-size:.75rem;color:var(--text2);">' + escHtmlSafe(done[i].code) + '</span>' : '') + '</div>').join('') + '</div>' +
+    (next ? '<div style="display:flex;gap:6px;margin-top:12px;flex-wrap:wrap;"><input id="boyScanCode" placeholder="Type the barcode number" style="flex:1;min-width:160px;"/>' +
+      '<button class="btn btn-primary btn-sm" style="width:auto;" onclick="submitBoyScanCode()">Add</button></div>' +
+      (_boyScan.camera
+        ? '<video id="boyScanVideo" playsinline muted style="width:100%;border-radius:10px;background:#000;margin-top:10px;"></video>'
+        : '<div style="margin-top:10px;"><button class="btn btn-secondary btn-sm" style="width:auto;" onclick="startBoyCamera()">📷 Scan with camera</button></div>') : '') +
+    '<div id="boyScanMsg" style="font-size:.8rem;margin-top:8px;color:var(--orange);"></div>';
+  if (_boyScan.camera && _boyScan.stream) {
+    const v = document.getElementById('boyScanVideo');
+    if (v) { v.srcObject = _boyScan.stream; v.play().catch(() => {}); attachBarcodeReader(v); }
+  }
+}
+
+// Saves one scan on the order, for the next product that has no scan yet
+async function addBoyScan(code) {
+  const ref = db.collection('hospitals/' + currentHospitalId + '/pharmacyOrders').doc(_boyScan.orderId);
+  const o = (await ref.get()).data() || {};
+  const names = orderItemNames(o);
+  const done = o[boyScanField()] || [];
+  if (done.length >= names.length) { setBoyScanMsg('All products are already scanned.'); return; }
+  if (done.some(d => d.code === code)) { setBoyScanMsg('This barcode is already scanned for another product.'); return; }
+  await ref.update({ [boyScanField()]: firebase.firestore.FieldValue.arrayUnion({ name: names[done.length], code: code, at: new Date().toISOString() }) });
+  showToast('✅ ' + names[done.length] + ' scanned', 'success');
+  await renderBoyScan();
+}
+
+async function submitBoyScanCode() {
+  const code = ((document.getElementById('boyScanCode') || {}).value || '').trim();
+  if (!code) { setBoyScanMsg('Type the barcode number first.'); return; }
+  try { await addBoyScan(code); } catch (e) { setBoyScanMsg('Could not save: ' + e.message); }
+}
+
+// Camera: reads one barcode at a time. Stops after each read, so the same barcode is not read twice.
+async function startBoyCamera() {
+  if (!('BarcodeDetector' in window)) { setBoyScanMsg('This phone cannot read barcodes with the camera. Type the barcode number instead.'); return; }
+  try {
+    _boyScan.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+  } catch (e) { setBoyScanMsg('Could not open the camera: ' + e.message); return; }
+  _boyScan.camera = true;
+  await renderBoyScan();
+}
+
+function attachBarcodeReader(video) {
+  let detector;
+  try { detector = new BarcodeDetector({ formats: ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128', 'code_39', 'qr_code'] }); }
+  catch (e) { setBoyScanMsg('Camera reading is not supported here. Type the barcode number instead.'); return; }
+  const tick = async () => {
+    if (!_boyScan.stream) return;
+    if (video.readyState >= 2) {
+      try {
+        const found = await detector.detect(video);
+        if (found.length && found[0].rawValue) {
+          stopBoyCamera();
+          await addBoyScan(String(found[0].rawValue).trim());
+          return;
+        }
+      } catch (e) { /* try the next frame */ }
+    }
+    _boyScan.timer = setTimeout(tick, 300);
+  };
+  tick();
+}
+
+function stopBoyCamera() {
+  if (_boyScan.timer) { clearTimeout(_boyScan.timer); _boyScan.timer = null; }
+  if (_boyScan.stream) { _boyScan.stream.getTracks().forEach(t => t.stop()); _boyScan.stream = null; }
+  _boyScan.camera = false;
+}
+
+function closeBoyScan() {
+  stopBoyCamera();
+  const ov = document.getElementById('boyScanOverlay');
+  if (ov) ov.style.display = 'none';
+  _boyScan.orderId = null;
 }
 
 // The wallet: the balance, and every money movement with its date and the balance after it
