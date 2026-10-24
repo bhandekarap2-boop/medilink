@@ -14051,6 +14051,7 @@ async function renderDeliveryLookupResult() {
     '<div style="font-weight:700;">' + (o.patientName||'—') + ' <span style="font-weight:400;color:var(--text2);font-size:.82rem;">(' + (o.patientId||'') + ')</span></div>' +
     '<div style="font-size:.82rem;color:var(--text2);margin-top:4px;">' + medList + ' • ₹' + (o.total||0) + '</div>' +
     '<div style="font-size:.82rem;margin-top:6px;font-family:monospace;">' + (o.orderNumber||'') + ' • ' + deliveryStatusLabel(o) + '</div>' +
+    (o.fulfillment === 'delivery' ? '<div style="font-size:.8rem;color:var(--text2);margin-top:4px;">Barcode scans: pickup ' + (o.pickupScans || []).length + '/' + (o.medicines || []).length + ' · doorstep ' + (o.doorScans || []).length + '/' + (o.medicines || []).length + '</div>' : '') +
     orderAssignHtml(_deliveryLookupOrderId, o, avail) +
     '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;">' +
     '<button class="btn btn-secondary btn-sm" onclick="showDeliveryOrderDetails(\'' + _deliveryLookupOrderId + '\')">👁️ Details</button>' +
@@ -19569,7 +19570,7 @@ async function loadDeliveryStats() {
     [o.assignedTo, o.deliveryPersonId].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i).forEach(id => {
       const s = stats[id] || (stats[id] = { sum: 0, count: 0, active: 0 });
       if (typeof o.boyRating === 'number') { s.sum += o.boyRating; s.count++; }
-      if (o.status !== 'fulfilled' && o.status !== 'cancelled' && o.deliveryStatus !== 'delivered' && o.assignedTo === id) s.active++;
+      if (o.status !== 'fulfilled' && o.status !== 'cancelled' && o.deliveryStatus !== 'delivered' && (o.assignedTo === id || o.deliveryPersonId === id)) s.active++;
     });
   });
   return { stats, orders: snap.docs };
