@@ -1716,7 +1716,7 @@ function launchApp() {
       buildSidebar();
     }).catch(() => {});
   }
-  navigateTo(currentRole === 'admin' ? 'dashboard' : currentRole === 'doctor' ? 'docDashboard' : 'patDashboard');
+  navigateTo(currentRole === 'admin' ? 'dashboard' : currentRole === 'doctor' ? 'docDashboard' : currentRole === 'delivery' ? 'deliveryHome' : 'patDashboard');
   // Deep link from WhatsApp/SMS (?go=patMedStore): after login, land straight on that page.
   try {
     const go = sessionStorage.getItem('mf_go');
@@ -2685,7 +2685,7 @@ function _mfInitUiTranslationObserver() {
 // card (which needs the same feature-filtered list to build its editable list from).
 function getDefaultSidebarItems() {
   const menus = {
-    delivery: [{icon:'📦', label:'My Deliveries', page:'deliveryHome'}],
+    delivery: [{icon:'📦', label:'My Deliveries', page:'deliveryHome'}, {icon:'💰', label:'Wallet', page:'deliveryWallet'}],
     admin: [
       {icon:'📊', label:'Dashboard', page:'dashboard'},
       {icon:'👨‍⚕️', label:'Doctors', page:'doctors'},
@@ -2868,6 +2868,7 @@ function navigateTo(page) {
     adminDisplaySetup: renderAdminDisplaySetup,
     adminDeliveryBoys: renderAdminDeliveryBoys,
     deliveryHome: renderDeliveryHome,
+    deliveryWallet: renderDeliveryWallet,
     superRecords: renderSuperRecords,
     superVideos: renderSuperVideos,
     adminQRPayment: renderAdminQRPayment,
@@ -19576,11 +19577,29 @@ async function handleDeliveryLogin() {
   } catch (e) { errEl.textContent = 'Error: ' + e.message; }
 }
 
-// The delivery boy's own section: the orders the admin assigned to him
+// ============ DELIVERY BOY: DASHBOARD AND WALLET ============
+// The wallet balance is the total of its entries. Entries are written when a delivery is completed (credit)
+// and when a payout is made (debit).
+async function loadDeliveryWalletEntries() {
+  const snap = await db.collection('hospitals/' + currentHospitalId + '/deliveryBoys/' + currentUser.uid + '/wallet').orderBy('createdAt', 'desc').get().catch(() => ({ docs: [] }));
+  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+}
+
+// The delivery boy's home: the wallet at the top left, then his deliveries
 async function renderDeliveryHome() {
   const mc = document.getElementById('mainContent');
-  mc.innerHTML = '<div class="page-header"><h2>My Deliveries</h2><p>The medicine deliveries the admin has assigned to you.</p></div>' +
-    '<div class="table-container" style="padding:20px;max-width:720px;"><div id="myDeliveries"><div class="empty-state"><p>Loading…</p></div></div></div>';
+  mc.innerHTML = '<div class="page-header"><h2>Hello, ' + escHtmlSafe(currentUser.name || 'there') + '</h2><p>Your deliveries and wallet.</p></div>' +
+    '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;">' +
+    '<div onclick="navigateTo(\'deliveryWallet\')" style="cursor:pointer;padding:14px 18px;border-radius:14px;background:var(--surface2);border:1px solid var(--accent);min-width:180px;">' +
+    '<div style="font-size:.78rem;color:var(--text2);">💰 Wallet (tap to see history)</div>' +
+    '<div id="walletChip" style="font-size:1.4rem;font-weight:800;margin-top:4px;">₹ …</div></div></div>' +
+    '<div class="table-container" style="padding:20px;max-width:720px;"><div class="section-title">My deliveries</div><div id="myDeliveries"><div class="empty-state"><p>Loading…</p></div></div></div>';
+  try {
+    const entries = await loadDeliveryWalletEntries();
+    const bal = entries.reduce((s, e) => s + (e.type === 'credit' ? 1 : -1) * (Number(e.amount) || 0), 0);
+    const chip = document.getElementById('walletChip');
+    if (chip) chip.textContent = '₹ ' + (Math.round(bal * 100) / 100);
+  } catch (e) { /* the wallet chip stays blank */ }
   try {
     const snap = await db.collection('hospitals/' + currentHospitalId + '/pharmacyOrders').where('assignedTo', '==', currentUser.uid).get();
     const el = document.getElementById('myDeliveries');
@@ -19596,6 +19615,37 @@ async function renderDeliveryHome() {
         '</div>';
     }).join('');
   } catch (e) { showToast('Could not load: ' + e.message, 'error'); }
+}
+
+// The wallet: the balance, and every money movement with its date and the balance after it
+async function renderDeliveryWallet() {
+  const mc = document.getElementById('mainContent');
+  mc.innerHTML = '<div class="page-header"><h2>My Wallet</h2><p>Your balance and every entry, with the date and the balance after it.</p></div>' +
+    '<div class="table-container" style="padding:20px;max-width:720px;"><div id="walletBalance" style="font-size:1.8rem;font-weight:800;">₹ …</div>' +
+    '<div id="walletHistory" style="margin-top:14px;"><div class="empty-state"><p>Loading…</p></div></div></div>';
+  try {
+    const entries = await loadDeliveryWalletEntries();
+    // work out the balance after each entry, oldest first
+    const oldestFirst = entries.slice().reverse();
+    let running = 0;
+    const rows = oldestFirst.map(e => {
+      const amt = Number(e.amount) || 0;
+      running += (e.type === 'credit' ? 1 : -1) * amt;
+      return { ...e, after: running };
+    }).reverse();
+    document.getElementById('walletBalance').textContent = '₹ ' + (Math.round(running * 100) / 100);
+    const hist = document.getElementById('walletHistory');
+    if (!rows.length) { hist.innerHTML = '<div class="empty-state"><p>No wallet entries yet. Deliveries and payouts will show here.</p></div>'; return; }
+    hist.innerHTML = rows.map(e => {
+      const when = e.createdAt && e.createdAt.toDate ? e.createdAt.toDate().toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+      const sign = e.type === 'credit' ? '+' : '-';
+      return '<div style="display:flex;justify-content:space-between;gap:10px;padding:12px 0;border-bottom:1px solid var(--border);flex-wrap:wrap;">' +
+        '<div><strong>' + escHtmlSafe(e.reason || (e.type === 'credit' ? 'Delivery credit' : 'Payout')) + '</strong>' +
+        '<div style="font-size:.78rem;color:var(--text2);">' + escHtmlSafe(when) + '</div></div>' +
+        '<div style="text-align:right;"><strong style="color:' + (e.type === 'credit' ? 'var(--green)' : 'var(--orange)') + ';">' + sign + '₹ ' + (Number(e.amount) || 0) + '</strong>' +
+        '<div style="font-size:.78rem;color:var(--text2);">Balance after: ₹ ' + (Math.round(e.after * 100) / 100) + '</div></div></div>';
+    }).join('');
+  } catch (e) { showToast('Could not load the wallet: ' + e.message, 'error'); }
 }
 
 // ============ OWNER: FULL CONTROL OF A HOSPITAL ============
