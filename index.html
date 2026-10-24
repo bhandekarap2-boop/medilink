@@ -19601,7 +19601,15 @@ async function renderDeliveryHome() {
     if (chip) chip.textContent = '₹ ' + (Math.round(bal * 100) / 100);
   } catch (e) { /* the wallet chip stays blank */ }
   try {
-    const snap = await db.collection('hospitals/' + currentHospitalId + '/pharmacyOrders').where('assignedTo', '==', currentUser.uid).get();
+    // orders assigned from the Medical Store (deliveryPersonId) and from the Delivery Boys page (assignedTo)
+    const ordersRef = db.collection('hospitals/' + currentHospitalId + '/pharmacyOrders');
+    const [byStore, byAdmin] = await Promise.all([
+      ordersRef.where('deliveryPersonId', '==', currentUser.uid).get().catch(() => ({ docs: [] })),
+      ordersRef.where('assignedTo', '==', currentUser.uid).get().catch(() => ({ docs: [] }))
+    ]);
+    const seen = new Set();
+    const snap = { docs: [...byStore.docs, ...byAdmin.docs].filter(d => seen.has(d.id) ? false : (seen.add(d.id), true)), empty: false };
+    snap.empty = snap.docs.length === 0;
     const el = document.getElementById('myDeliveries');
     if (snap.empty) { el.innerHTML = '<div class="empty-state"><p>No deliveries assigned to you yet.</p></div>'; return; }
     el.innerHTML = snap.docs.map(d => {
