@@ -7020,7 +7020,7 @@ async function viewPatientBillCopy(billId) {
     if (!billDoc.exists) { showToast('❌ Bill not found', 'error'); return; }
     const hospDoc = await db.collection('hospitals').doc(currentHospitalId).get();
     const html = buildGenericBillHtml(billId, billDoc.data(), hospDoc.exists ? hospDoc.data() : {});
-    const w = window.open('', '_blank');
+    const w = printWindowShim();
     w.document.write(html);
     w.document.close();
   } catch(e) {
@@ -7194,7 +7194,7 @@ function buildPrescriptionDocHtml(patient, meds, diagnosis, notes, followup, hos
 
 function printPrescription(patient, meds, diagnosis, notes, followup, hosp, vitals, tests) {
   const html = buildPrescriptionDocHtml(patient, meds, diagnosis, notes, followup, hosp, vitals, tests, currentUser, true);
-  const w = window.open('', '_blank');
+  const w = printWindowShim();
   if (!w) { showToast('\u274c Popup blocked! Allow popups for this site to print.', 'error'); return; }
   w.document.write(html);
   w.document.close();
@@ -11884,7 +11884,7 @@ function lrbReportHtml(rep, h) {
     '<div style="font-weight:700;color:#000;">NOT VALID FOR MEDICO-LEGAL PURPOSE</div><div style="margin-top:3px;">' + e(footer) + '</div></div></div>' +
     '<script>window.onload=function(){setTimeout(function(){window.print();},350);}<\/script></body></html>';
 }
-function lrbOpenReport(rep, h) { const w = window.open('', '_blank'); if (!w) { showToast('Allow pop-ups to open the report', 'error'); return; } w.document.write(lrbReportHtml(rep, h)); w.document.close(); }
+function lrbOpenReport(rep, h) { const w = printWindowShim(); if (!w) { showToast('Allow pop-ups to open the report', 'error'); return; } w.document.write(lrbReportHtml(rep, h)); w.document.close(); }
 function lrbNowStr() { return new Date().toLocaleString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }); }
 
 // ---- save: order + patient's report + medical chart (all from the same values) ----
@@ -13894,7 +13894,7 @@ async function printOfflineOrderTicket(orderId) {
     </div>
     <script>window.onload=function(){window.print();}<\/script>
     </body></html>`;
-    const w = window.open('', '_blank');
+    const w = printWindowShim();
     if (!w) { showToast('❌ Popup blocked! Allow popups for this site.', 'error'); return; }
     w.document.write(html); w.document.close();
   } catch(e) { showToast('❌ ' + e.message, 'error'); }
@@ -14918,6 +14918,31 @@ function showPharmacySaleReceipt(billId, patientId, patientName, items, totals) 
   openModal('historyModal');
 }
 
+// Printing goes through a hidden frame on this page. Browsers block a new popup window for printing
+// (the "Popup blocked" message), but they do not block this.
+function printHtmlInFrame(html) {
+  const clean = html.replace(/<script>(?:(?!<\/script>)[\s\S])*window\.print\(\)(?:(?!<\/script>)[\s\S])*<\/script>/g, '');
+  const frame = document.createElement('iframe');
+  frame.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden;';
+  document.body.appendChild(frame);
+  const fd = frame.contentWindow.document;
+  fd.open(); fd.write(clean); fd.close();
+  setTimeout(() => {
+    try { frame.contentWindow.focus(); frame.contentWindow.print(); }
+    catch (e) { showToast('❌ Could not open the print dialog: ' + e.message, 'error'); }
+    setTimeout(() => frame.remove(), 2000);
+  }, 500);
+}
+// A stand-in for the popup window: the page it is given is printed through printHtmlInFrame.
+function printWindowShim() {
+  let buf = '', printed = false;
+  const doPrint = () => { if (printed) return; printed = true; printHtmlInFrame(buf); };
+  return {
+    document: { write: s => { buf += s; }, close: doPrint },
+    focus: () => {}, close: () => {}, print: doPrint
+  };
+}
+
 // Shared printable ticket for a pharmacyOrders doc (online patient/WhatsApp order OR an offline
 // doctor-prescription order) — mode 'receipt' (compact acknowledgment), 'bill' (itemized invoice,
 // same look as printPharmacyBill), or 'code' (large order-code/QR page to stick on the package).
@@ -14947,7 +14972,7 @@ async function printMedOrderTicket(orderId, mode) {
       </div>
       <script>window.onload=function(){window.print();}<\/script>
       </body></html>`;
-      const w = window.open('', '_blank');
+      const w = printWindowShim();
       if (!w) { showToast('❌ Popup blocked! Allow popups for this site.', 'error'); return; }
       w.document.write(html); w.document.close();
       return;
@@ -14956,50 +14981,56 @@ async function printMedOrderTicket(orderId, mode) {
     const stockSnap = await db.collection('hospitals/' + currentHospitalId + '/medicines').get().catch(() => ({ docs: [] }));
     const barcodeOf = {};
     stockSnap.docs.forEach(d => { const s = d.data(); if (s.barcode) barcodeOf[s.name] = s.barcode; });
-    const itemsHtml = medList.map(m =>
-      '<tr><td style="padding:8px 0;border-bottom:1px solid #eee;">' + m.name + (barcodeOf[m.name] ? '<div style="font-family:monospace;font-size:11px;color:#555;">Barcode ' + barcodeOf[m.name] + '</div>' : '') + '</td><td style="text-align:right;padding:8px 0;border-bottom:1px solid #eee;">' + m.qty + ' × ₹' + m.sellPrice + '</td><td style="text-align:right;padding:8px 0;border-bottom:1px solid #eee;font-weight:500;">₹' + m.subtotal + '</td></tr>'
-    ).join('');
-    const title = mode === 'bill' ? 'Medical Store Bill' : 'Order Receipt';
-    const html = `<!DOCTYPE html><html><head><title>${title} - ${orderNumber}</title>
-    <style>
-      body{font-family:Arial,sans-serif;padding:24px;max-width:700px;margin:0 auto;color:#000;}
-      .header{text-align:center;border-bottom:3px double #000;padding-bottom:12px;margin-bottom:16px;}
-      .hosp-name{font-size:22px;font-weight:700;margin-bottom:4px;}
-      .info-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px;font-size:13px;}
-      .info-box{background:#f9f9f9;padding:10px;border-radius:4px;}
-      table{width:100%;border-collapse:collapse;font-size:13px;}
-      .total-row{font-size:16px;font-weight:700;background:#f0f0f0;}
-      @media print{body{padding:10px;}}
-    </style></head><body>
-    <div class="header">
-      ${billLogoHtml(hosp)}
-      <div class="hosp-name">${hospName}</div>
-      <div style="font-size:14px;font-weight:700;margin-top:8px;text-transform:uppercase;letter-spacing:2px;">💊 ${title}</div>
-    </div>
-    <div class="info-grid">
-      <div class="info-box"><strong>Order No:</strong> ${orderNumber}<br/><strong>Date:</strong> ${when}</div>
-      <div class="info-box"><strong>Patient:</strong> ${o.patientName || ''}<br/><strong>ID:</strong> ${o.patientId || 'Walk-in'}</div>
-      <div class="info-box"><strong>Fulfillment:</strong> ${o.fulfillment === 'delivery' ? 'Home Delivery' : 'Store Pickup'}</div>
-      <div class="info-box"><strong>Payment:</strong> ${(MED_ORDER_PAYMENT_LABELS[o.paymentStatus] || MED_ORDER_PAYMENT_LABELS.awaiting_payment)[0]}</div>
-    </div>
-    <table>
-      <thead><tr style="background:#000;color:#fff;"><th style="padding:10px;text-align:left;">Medicine</th><th style="padding:10px;text-align:right;">Qty × Price</th><th style="padding:10px;text-align:right;">Amount</th></tr></thead>
-      <tbody>${itemsHtml}
-      <tr><td colspan="2" style="padding:8px 0;text-align:right;">Subtotal</td><td style="text-align:right;padding:8px 0;">₹${o.subtotal||0}</td></tr>
-      ${o.gstAmount ? '<tr><td colspan="2" style="padding:8px 0;text-align:right;">GST (' + o.gstPercent + '%)</td><td style="text-align:right;padding:8px 0;">+₹' + o.gstAmount + '</td></tr>' : ''}
-      ${o.deliveryCharge ? '<tr><td colspan="2" style="padding:8px 0;text-align:right;">Delivery Charge</td><td style="text-align:right;padding:8px 0;">+₹' + o.deliveryCharge + '</td></tr>' : ''}
-      </tbody>
-      <tfoot><tr class="total-row"><td colspan="2" style="padding:12px 0;">TOTAL AMOUNT</td><td style="text-align:right;padding:12px 0;">₹${o.total||0}</td></tr></tfoot>
-    </table>
-    ${billVerifiedBadgeHtml()}
-    <div style="margin-top:12px;text-align:center;font-size:11px;color:#888;border-top:1px solid #ccc;padding-top:12px;">
-      Thank you for choosing ${hospName}<br/>This is a computer generated ${mode === 'bill' ? 'bill' : 'receipt'} — No signature required<br/>Powered by MediFlow
-    </div>
-    <script>window.onload=function(){window.print();}<\/script>
-    </body></html>`;
-    const w = window.open('', '_blank');
-    if (!w) { showToast('❌ Popup blocked! Allow popups for this site.', 'error'); return; }
-    w.document.write(html); w.document.close();
+    const paidLabel = (MED_ORDER_PAYMENT_LABELS[o.paymentStatus] || MED_ORDER_PAYMENT_LABELS.awaiting_payment)[0];
+    const fulfilLabel = o.fulfillment === 'delivery' ? 'Home Delivery' : 'Store Pickup';
+    const barcodeLine = name => barcodeOf[name] ? '<div style="font-family:monospace;font-size:11px;color:#555;">Barcode ' + barcodeOf[name] + '</div>' : '';
+    const pageCss = '<style>body{font-family:Arial,sans-serif;padding:24px;max-width:700px;margin:0 auto;color:#000;}' +
+      '.header{text-align:center;border-bottom:3px double #000;padding-bottom:12px;margin-bottom:16px;}' +
+      '.hosp-name{font-size:22px;font-weight:700;margin-bottom:4px;}' +
+      '.info-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px;font-size:13px;}' +
+      '.info-box{background:#f9f9f9;padding:10px;border-radius:4px;}' +
+      'table{width:100%;border-collapse:collapse;font-size:13px;}' +
+      '.total-row{font-size:16px;font-weight:700;background:#f0f0f0;}' +
+      '.note{font-size:12px;color:#333;margin-top:14px;border:1px dashed #999;padding:10px;border-radius:4px;}' +
+      '@media print{body{padding:10px;}}</style>';
+    const pageHead = docTitle => '<div class="header">' + billLogoHtml(hosp) + '<div class="hosp-name">' + hospName + '</div>' +
+      '<div style="font-size:14px;font-weight:700;margin-top:8px;text-transform:uppercase;letter-spacing:2px;">' + docTitle + '</div></div>';
+    const infoGrid = (numberLabel, numberValue) => '<div class="info-grid">' +
+      '<div class="info-box"><strong>' + numberLabel + ':</strong> ' + numberValue + '<br/><strong>Date:</strong> ' + when + '</div>' +
+      '<div class="info-box"><strong>Patient:</strong> ' + (o.patientName || '') + '<br/><strong>ID:</strong> ' + (o.patientId || 'Walk-in') + '</div>' +
+      '<div class="info-box"><strong>Fulfillment:</strong> ' + fulfilLabel + '</div>' +
+      '<div class="info-box"><strong>Payment:</strong> ' + paidLabel + '</div></div>';
+    const footer = '<div style="margin-top:12px;text-align:center;font-size:11px;color:#888;border-top:1px solid #ccc;padding-top:12px;">Thank you for choosing ' + hospName + '<br/>Powered by MediFlow</div>';
+
+    let html;
+    if (mode === 'bill') {
+      // Tax invoice: every product with its rate and amount, and the GST and delivery lines
+      const rows = medList.map(m => '<tr><td style="padding:8px 0;border-bottom:1px solid #eee;">' + m.name + barcodeLine(m.name) + '</td>' +
+        '<td style="text-align:right;padding:8px 0;border-bottom:1px solid #eee;">' + m.qty + '</td>' +
+        '<td style="text-align:right;padding:8px 0;border-bottom:1px solid #eee;">₹' + (m.sellPrice || 0) + '</td>' +
+        '<td style="text-align:right;padding:8px 0;border-bottom:1px solid #eee;">₹' + (m.subtotal || (m.qty * (m.sellPrice || 0))) + '</td></tr>').join('');
+      html = '<!DOCTYPE html><html><head><title>Bill - ' + orderNumber + '</title>' + pageCss + '</head><body>' +
+        pageHead('Tax Invoice / Bill') + infoGrid('Bill No', orderNumber) +
+        '<table><thead><tr style="background:#000;color:#fff;"><th style="padding:10px;text-align:left;">Medicine</th><th style="padding:10px;text-align:right;">Qty</th><th style="padding:10px;text-align:right;">Rate</th><th style="padding:10px;text-align:right;">Amount</th></tr></thead>' +
+        '<tbody>' + rows +
+        '<tr><td colspan="3" style="padding:8px 0;text-align:right;">Subtotal</td><td style="text-align:right;padding:8px 0;">₹' + (o.subtotal || 0) + '</td></tr>' +
+        (o.gstAmount ? '<tr><td colspan="3" style="padding:8px 0;text-align:right;">GST (' + o.gstPercent + '%)</td><td style="text-align:right;padding:8px 0;">+₹' + o.gstAmount + '</td></tr>' : '') +
+        (o.deliveryCharge ? '<tr><td colspan="3" style="padding:8px 0;text-align:right;">Delivery charge</td><td style="text-align:right;padding:8px 0;">+₹' + o.deliveryCharge + '</td></tr>' : '') +
+        '</tbody><tfoot><tr class="total-row"><td colspan="3" style="padding:12px 0;">TOTAL AMOUNT</td><td style="text-align:right;padding:12px 0;">₹' + (o.total || 0) + '</td></tr></tfoot></table>' +
+        billVerifiedBadgeHtml() +
+        '<div style="margin-top:12px;text-align:center;font-size:11px;color:#888;border-top:1px solid #ccc;padding-top:12px;">This is a computer generated bill — no signature required<br/>Powered by MediFlow</div></body></html>';
+    } else {
+      // Receipt: confirms the order and what it contains. No rates or tax; the bill is issued at payment.
+      const rows = medList.map(m => '<tr><td style="padding:8px 0;border-bottom:1px solid #eee;">' + m.name + barcodeLine(m.name) + '</td>' +
+        '<td style="text-align:right;padding:8px 0;border-bottom:1px solid #eee;">Qty ' + m.qty + '</td></tr>').join('');
+      html = '<!DOCTYPE html><html><head><title>Order Receipt - ' + orderNumber + '</title>' + pageCss + '</head><body>' +
+        pageHead('Order Receipt') + infoGrid('Order No', orderNumber) +
+        '<table><thead><tr style="background:#000;color:#fff;"><th style="padding:10px;text-align:left;">Medicine</th><th style="padding:10px;text-align:right;">Quantity</th></tr></thead>' +
+        '<tbody>' + rows + '</tbody></table>' +
+        '<div class="note"><strong>Amount payable: ₹' + (o.total || 0) + '</strong> (includes GST and delivery charge where applicable).<br/>' +
+        'This receipt confirms your order. It is not a tax invoice; the bill is issued at payment.</div>' + footer + '</body></html>';
+    }
+    printHtmlInFrame(html);
   } catch(e) { showToast('❌ ' + e.message, 'error'); }
 }
 
@@ -15053,7 +15084,7 @@ function printPharmacyBill(data) {
     </div>
     <script>window.onload=function(){window.print();}<\/script>
     </body></html>`;
-    const w = window.open('', '_blank');
+    const w = printWindowShim();
     if (!w) { showToast('❌ Popup blocked! Allow popups for this site.', 'error'); return; }
     w.document.write(html); w.document.close();
   });
@@ -19039,7 +19070,7 @@ function reorderListText() {
 async function copyReorderList() { try { await navigator.clipboard.writeText(reorderListText()); showToast('✅ Reorder list copied', 'success'); } catch(e) { prompt('Copy this list:', reorderListText()); } }
 function shareReorderList() { window.open('https://wa.me/?text=' + encodeURIComponent(reorderListText()), '_blank'); }
 function printReorderList() {
-  const w = window.open('', '_blank');
+  const w = printWindowShim();
   if (!w) { showToast('Allow pop-ups to print', 'error'); return; }
   w.document.write('<pre style="font:15px/1.7 system-ui;padding:24px;white-space:pre-wrap;">' + escHtmlSafe(reorderListText()) + '</pre>');
   w.document.close(); w.focus(); w.print();
@@ -21232,7 +21263,7 @@ async function printCategoryRecord(catKey, recordId) {
     const hosp = hospSnap.exists ? hospSnap.data() : {};
     const { title, bodyHtml } = buildPrintHistoryCategoryHtml(catKey, r, p);
     const html = wrapPrintHistoryHtml(hosp, title, bodyHtml, catKey === 'bill');
-    const w = window.open('', '_blank');
+    const w = printWindowShim();
     if (!w) { showToast('❌ Popup blocked! Allow popups for this site.', 'error'); return; }
     w.document.write(html);
     w.document.close();
@@ -21300,7 +21331,7 @@ async function reprintDocument(recordId) {
   try {
     const data = JSON.parse(r.data || '{}');
     if (!data.html) { showToast('Cannot reprint this document type', 'error'); return; }
-    const w = window.open('', '_blank');
+    const w = printWindowShim();
     if (!w) { showToast('❌ Popup blocked! Allow popups for this site.', 'error'); return; }
     w.document.write(data.html);
     w.document.close();
@@ -21319,7 +21350,7 @@ function printAllVisible() {
   
   if (!filtered.length) { showToast('No records to print', 'error'); return; }
   
-  const w = window.open('', '_blank');
+  const w = printWindowShim();
   if (!w) { showToast('❌ Popup blocked! Allow popups for this site.', 'error'); return; }
   w.document.write(`<!DOCTYPE html><html><head><title>Print History</title>
     <style>body{font-family:Arial,sans-serif;padding:20px;}table{width:100%;border-collapse:collapse;}
