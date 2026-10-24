@@ -19619,10 +19619,24 @@ async function renderDeliveryHome() {
         '<strong>' + escHtmlSafe(o.patientName || 'Patient') + '</strong>' +
         '<div style="font-size:.85rem;color:var(--text2);margin-top:4px;">' + escHtmlSafe(o.deliveryAddress || 'Address not given') + '</div>' +
         '<div style="font-size:.8rem;margin-top:4px;">Status: ' + escHtmlSafe(o.status || '') + (o.deliveryKm ? ' · ' + o.deliveryKm + ' km' : '') + '</div>' +
-        (map ? '<a href="' + map + '" target="_blank" rel="noopener" class="btn btn-secondary btn-sm" style="text-decoration:none;margin-top:8px;display:inline-block;">Open in Google Maps</a>' : '') +
+        (o.deliveryLat && o.deliveryLng ? '<div id="route_' + d.id + '" style="margin-top:8px;"><button class="btn btn-secondary btn-sm" style="width:auto;" onclick="showRouteFromMyLocation(\'' + d.id + '\',' + o.deliveryLat + ',' + o.deliveryLng + ')">📍 Route from my location</button></div>' : '') +
         '</div>';
     }).join('');
   } catch (e) { showToast('Could not load: ' + e.message, 'error'); }
+}
+
+// Opens the route from the delivery boy's own location to the customer, in Google Maps
+function showRouteFromMyLocation(orderId, dLat, dLng) {
+  const box = document.getElementById('route_' + orderId);
+  if (!box) return;
+  if (!navigator.geolocation) { showToast('This phone cannot read its location', 'error'); return; }
+  box.innerHTML = '<span style="font-size:.82rem;color:var(--text2);">Finding your location…</span>';
+  navigator.geolocation.getCurrentPosition(pos => {
+    const url = 'https://www.google.com/maps/dir/?api=1&origin=' + pos.coords.latitude + ',' + pos.coords.longitude + '&destination=' + dLat + ',' + dLng + '&travelmode=driving';
+    box.innerHTML = '<a href="' + url + '" target="_blank" rel="noopener" class="btn btn-primary btn-sm" style="text-decoration:none;display:inline-block;">Open the route in Google Maps</a>';
+  }, err => {
+    box.innerHTML = '<span style="font-size:.82rem;color:var(--orange);">Could not read your location. Turn on location for the browser, then try again.</span>';
+  }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
 }
 
 // The wallet: the balance, and every money movement with its date and the balance after it
