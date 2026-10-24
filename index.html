@@ -13902,7 +13902,11 @@ let _deliveryStaffList = null;
 async function loadDeliveryStaffList() {
   if (_deliveryStaffList) return _deliveryStaffList;
   const snap = await db.collection('hospitals/' + currentHospitalId + '/staff').where('role','==','Delivery Staff').get();
-  _deliveryStaffList = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  const oldList = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  // the delivery boys made in the Delivery Boys page are listed too, when they are on duty
+  const newSnap = await db.collection('hospitals/' + currentHospitalId + '/deliveryBoys').get().catch(() => ({ docs: [] }));
+  const newList = newSnap.docs.filter(d => d.data().active !== false).map(d => ({ id: d.id, name: d.data().name || d.data().username || 'Delivery boy', role: 'Delivery Staff' }));
+  _deliveryStaffList = [...oldList, ...newList];
   return _deliveryStaffList;
 }
 // Delivery boys with a live "free / busy" flag: busy = currently assigned to any online order that
