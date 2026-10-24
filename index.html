@@ -1710,6 +1710,7 @@ function launchApp() {
   document.getElementById('app').style.display = 'flex';
   document.body.classList.add('app-active');
   updateTopBarIdentity();
+  if (currentRole === 'admin') startDeliveryAutoAssign();
   // Apply saved preferences
   applyTheme(localStorage.getItem('mediflow_theme') || 'dark');
   applyLayout(localStorage.getItem('mediflow_layout') || 'desktop');
@@ -13955,7 +13956,7 @@ async function loadDeliveryStaffList() {
   const oldList = snap.docs.map(d => ({ id: d.id, ...d.data() }));
   // the delivery boys made in the Delivery Boys page are listed too, when they are on duty
   const newSnap = await db.collection('hospitals/' + currentHospitalId + '/deliveryBoys').get().catch(() => ({ docs: [] }));
-  const newList = newSnap.docs.filter(d => d.data().active !== false).map(d => ({ id: d.id, name: d.data().name || d.data().username || 'Delivery boy', phone: d.data().phone || '', role: 'Delivery Staff' }));
+  const newList = newSnap.docs.filter(d => d.data().active !== false && isOnDutyToday(d.data())).map(d => ({ id: d.id, name: d.data().name || d.data().username || 'Delivery boy', phone: d.data().phone || '', role: 'Delivery Staff' }));
   _deliveryStaffList = [...oldList, ...newList];
   return _deliveryStaffList;
 }
@@ -19508,7 +19509,7 @@ async function saveDisplaySetup() {
 // ============ ADMIN: DELIVERY BOYS (accounts, on/off, task assignment) ============
 async function renderAdminDeliveryBoys() {
   const mc = document.getElementById('mainContent');
-  mc.innerHTML = '<div class="page-header"><h2>Delivery Boys</h2><p>Create delivery boy accounts, switch them on or off, and assign medicine deliveries.</p></div>' +
+  mc.innerHTML = '<div class="page-header"><h2>Delivery Boys</h2><p>Create delivery boy accounts. Each boy switches himself on or off, and each new delivery goes to the best boy on duty.</p></div>' +
     '<div class="table-container" style="padding:20px;margin-bottom:16px;max-width:720px;">' +
     '<div class="section-title">Create a delivery boy account</div>' +
     '<div class="form-group"><label>Full name</label><input id="dbName" placeholder="e.g. Ravi Kumar"/></div>' +
@@ -19544,56 +19545,117 @@ async function createDeliveryBoy() {
   } catch (e) { showToast('Could not create: ' + e.message, 'error'); }
 }
 
+// ============ DELIVERY BOYS (ADMIN): WHO IS ON DUTY, AND ORDERS GIVEN AUTOMATICALLY ============
+// Test mode: while this username is on duty, every new delivery goes to him. Set it to '' to use the ranking only.
+const DELIVERY_TEST_USERNAME = 'rohan';
+
+// Ratings and active deliveries for every delivery boy, from the delivery orders
+async function loadDeliveryStats() {
+  const snap = await db.collection('hospitals/' + currentHospitalId + '/pharmacyOrders').where('fulfillment', '==', 'delivery').get().catch(() => ({ docs: [] }));
+  const stats = {};
+  snap.docs.forEach(d => {
+    const o = d.data();
+    [o.assignedTo, o.deliveryPersonId].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i).forEach(id => {
+      const s = stats[id] || (stats[id] = { sum: 0, count: 0, active: 0 });
+      if (typeof o.boyRating === 'number') { s.sum += o.boyRating; s.count++; }
+      if (o.status !== 'fulfilled' && o.status !== 'cancelled' && o.deliveryStatus !== 'delivered' && o.assignedTo === id) s.active++;
+    });
+  });
+  return { stats, orders: snap.docs };
+}
+
 async function loadDeliveryBoys() {
   const el = document.getElementById('dbList');
   if (!el) return;
   try {
-    const snap = await db.collection('hospitals/' + currentHospitalId + '/deliveryBoys').get();
+    const [snap, { stats }] = await Promise.all([
+      db.collection('hospitals/' + currentHospitalId + '/deliveryBoys').get(),
+      loadDeliveryStats()
+    ]);
     if (snap.empty) { el.innerHTML = '<div class="empty-state"><p>No delivery boys yet. Create one above.</p></div>'; return; }
-    el.innerHTML = snap.docs.map(d => {
+    const rows = await Promise.all(snap.docs.map(async d => {
       const b = d.data();
-      const on = !!b.active;
-      return '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 0;border-bottom:1px solid var(--border);">' +
-        '<div><strong>' + escHtmlSafe(b.name || '') + '</strong> <span style="color:var(--text2);font-size:.8rem;">@' + escHtmlSafe(b.username || '') + ' · ' + escHtmlSafe(b.email || '') + '</span>' +
-        '<div style="font-size:.8rem;color:' + (on ? 'var(--green)' : 'var(--orange)') + ';">' + (on ? 'On duty' : 'Off duty') + '</div></div>' +
-        '<div style="display:flex;gap:6px;flex-wrap:wrap;">' +
-        '<button class="btn btn-secondary btn-sm" style="width:auto;" onclick="toggleDeliveryBoy(&quot;' + d.id + '&quot;,' + (!on) + ')">' + (on ? 'Switch off' : 'Switch on') + '</button>' +
-        '<button class="btn btn-primary btn-sm" style="width:auto;" onclick="assignDeliveryTask(&quot;' + d.id + '&quot;,&quot;' + escHtmlSafe(b.username || '') + '&quot;)">Assign a delivery</button>' +
-        '</div></div>';
-    }).join('');
+      const mins = await dutyMinutesToday(d.id, b);
+      const s = stats[d.id] || { sum: 0, count: 0, active: 0 };
+      const rating = s.count ? (s.sum / s.count).toFixed(1) + ' ★ (' + s.count + ')' : 'no ratings yet';
+      const on = isOnDutyToday(b);
+      return '<div style="padding:12px 0;border-bottom:1px solid var(--border);">' +
+        '<strong>' + escHtmlSafe(b.name || '') + '</strong> <span style="color:var(--text2);font-size:.8rem;">@' + escHtmlSafe(b.username || '') + '</span>' +
+        '<div style="font-size:.8rem;margin-top:3px;color:' + (on ? 'var(--green)' : 'var(--text2)') + ';">' + (on ? '🟢 On duty today' : '⚪ Off duty today') + ' · ' + (Math.round(mins / 6) / 10) + ' h today</div>' +
+        '<div style="font-size:.8rem;color:var(--text2);margin-top:2px;">Rating: ' + rating + ' · Active deliveries: ' + s.active + '</div></div>';
+    }));
+    const onNow = snap.docs.filter(d => isOnDutyToday(d.data())).length;
+    el.innerHTML = '<div style="font-size:.85rem;margin-bottom:8px;">Available today: <strong>' + onNow + '</strong></div>' + rows.join('');
   } catch (e) { el.innerHTML = '<div class="empty-state"><p>Could not load: ' + escHtmlSafe(e.message) + '</p></div>'; }
 }
 
-async function toggleDeliveryBoy(id, on) {
-  try {
-    await db.collection('hospitals/' + currentHospitalId + '/deliveryBoys').doc(id).update({ active: on });
-    loadDeliveryBoys();
-  } catch (e) { showToast('Could not update: ' + e.message, 'error'); }
+// Tells the boy about the new offer: a banner message, and WhatsApp if his number is saved
+async function notifyBoyOfOffer(boy, o) {
+  await db.collection('hospitals/' + currentHospitalId + '/notifications').add({
+    title: 'New delivery offer', description: 'Open My Deliveries to accept or reject it.', link: '', target: 'delivery:' + boy.username,
+    sentBy: 'MediFlow', createdAt: firebase.firestore.FieldValue.serverTimestamp(), date: todayStr()
+  });
+  if (boy.phone) {
+    await sendViaWhatsAppCloudApi(boy.phone,
+      '📦 New delivery offer (order ' + (o.orderNumber || '') + '). Open the MediFlow app, My Deliveries, and accept or reject it. The customer address is shown after you accept.',
+      await waOrderUpdateTpl(boy.name || boy.username, o.orderNumber, 'New delivery offer: open My Deliveries to accept or reject'));
+  }
 }
 
-// Picks the first home-delivery order that is not yet assigned and offers it to the boy. He accepts or rejects it.
-// He is told by WhatsApp and in his banner. The customer's address is not sent until he accepts.
-async function assignDeliveryTask(boyId, username) {
+// Best boy for a delivery: the test boy when he is on duty, else the highest rating,
+// then the fewest active deliveries, then the fewest hours today.
+function pickDeliveryBoy(pool, stats) {
+  const test = pool.find(b => b.username === DELIVERY_TEST_USERNAME);
+  if (test) return test;
+  const rating = b => (stats[b.id] && stats[b.id].count ? stats[b.id].sum / stats[b.id].count : 3.5);
+  const active = b => (stats[b.id] ? stats[b.id].active : 0);
+  return pool.slice().sort((a, b) => (rating(b) - rating(a)) || (active(a) - active(b)) || (a.minutes - b.minutes))[0];
+}
+
+let _autoAssignUnsub = null;
+let _autoAssignBusy = false;
+// Runs while an admin has the app open: every new delivery order that has no boy gets one
+function startDeliveryAutoAssign() {
+  if (_autoAssignUnsub) { _autoAssignUnsub(); _autoAssignUnsub = null; }
+  if (!currentHospitalId) return;
+  _autoAssignUnsub = db.collection('hospitals/' + currentHospitalId + '/pharmacyOrders').where('fulfillment', '==', 'delivery').where('status', '==', 'pending').onSnapshot(snap => {
+    if (snap.docs.some(d => !d.data().assignedTo) && !_autoAssignBusy) autoAssignWaitingOrders();
+  }, () => {});
+}
+
+async function autoAssignWaitingOrders() {
+  _autoAssignBusy = true;
   try {
-    const snap = await db.collection('hospitals/' + currentHospitalId + '/pharmacyOrders').where('fulfillment', '==', 'delivery').where('status', '==', 'pending').limit(20).get();
-    const open = snap.docs.filter(d => !d.data().assignedTo);
-    if (!open.length) { showToast('No unassigned delivery orders right now', 'error'); return; }
-    const order = open[0];
-    const o = order.data();
-    const boy = ((await db.collection('hospitals/' + currentHospitalId + '/deliveryBoys').doc(boyId).get()).data()) || {};
-    await order.ref.update({ assignedTo: boyId, assignedToName: username, assignedAt: firebase.firestore.FieldValue.serverTimestamp(), deliveryOfferStatus: 'offered' });
-    await db.collection('hospitals/' + currentHospitalId + '/notifications').add({
-      title: 'New delivery offer', description: 'Open My Deliveries to accept or reject it.', link: '', target: 'delivery:' + username,
-      sentBy: currentUser.name || 'Admin', createdAt: firebase.firestore.FieldValue.serverTimestamp(), date: todayStr()
-    });
-    let sent = false;
-    if (boy.phone) {
-      sent = await sendViaWhatsAppCloudApi(boy.phone,
-        '📦 New delivery offer (order ' + (o.orderNumber || '') + '). Open the MediFlow app, My Deliveries, and accept or reject it. The customer address is shown after you accept.',
-        await waOrderUpdateTpl(boy.name || username, o.orderNumber, 'New delivery offer: open My Deliveries to accept or reject'));
+    const { stats, orders } = await loadDeliveryStats();
+    const waiting = orders.filter(d => d.data().status === 'pending' && !d.data().assignedTo);
+    if (!waiting.length) return;
+    const boysSnap = await db.collection('hospitals/' + currentHospitalId + '/deliveryBoys').get();
+    const pool = [];
+    for (const b of boysSnap.docs) {
+      const data = b.data();
+      if (data.active === false || !isOnDutyToday(data)) continue;
+      pool.push({ id: b.id, ...data, minutes: await dutyMinutesToday(b.id, data) });
     }
-    showToast('Offer sent to @' + username + (boy.phone ? (sent ? ' (WhatsApp sent)' : ' (WhatsApp failed)') : ' (no WhatsApp number on file)'), 'success');
-  } catch (e) { showToast('Could not assign: ' + e.message, 'error'); }
+    if (!pool.length) return;
+    for (const od of waiting) {
+      const o = od.data();
+      const open = pool.filter(b => !(o.rejectedBy || []).includes(b.id));
+      if (!open.length) continue;
+      const pick = pickDeliveryBoy(open, stats);
+      const claimed = await db.runTransaction(async tx => {
+        const fresh = await tx.get(od.ref);
+        if (!fresh.exists || fresh.data().assignedTo) return false;
+        tx.update(od.ref, { assignedTo: pick.id, assignedToName: pick.username, assignedAt: firebase.firestore.FieldValue.serverTimestamp(), deliveryOfferStatus: 'offered' });
+        return true;
+      });
+      if (!claimed) continue;
+      stats[pick.id] = stats[pick.id] || { sum: 0, count: 0, active: 0 };
+      stats[pick.id].active++;
+      await notifyBoyOfOffer(pick, o);
+      showToast('Order ' + (o.orderNumber || '') + ' offered to @' + pick.username, 'success');
+    }
+  } catch (e) { showToast('Auto-assign: ' + e.message, 'error'); }
+  finally { _autoAssignBusy = false; }
 }
 
 // ============ DELIVERY BOY LOGIN AND HIS OWN SECTION ============
@@ -19640,21 +19702,85 @@ async function loadDeliveryWalletEntries() {
   return snap.docs.map(d => ({ id: d.id, ...d.data() }));
 }
 
-// The delivery boy's home: the rating and the wallet at the top, the banner, then his deliveries
-async function loadDeliveryMyOrders() {
-  const ordersRef = db.collection('hospitals/' + currentHospitalId + '/pharmacyOrders');
-  const [byStore, byAdmin] = await Promise.all([
-    ordersRef.where('deliveryPersonId', '==', currentUser.uid).get().catch(() => ({ docs: [] })),
-    ordersRef.where('assignedTo', '==', currentUser.uid).get().catch(() => ({ docs: [] }))
-  ]);
-  const seen = new Set();
-  return [...byStore.docs, ...byAdmin.docs].filter(d => seen.has(d.id) ? false : (seen.add(d.id), true));
+// The delivery boy's home: the duty switch, his live list of deliveries, his rating and the offers.
+// A boy is on duty only for the day he switched on. The switch resets each day.
+function isOnDutyToday(b) { return !!b && b.onDuty === true && b.onDutyDate === todayStr(); }
+
+function deliveryBoyRef() { return db.collection('hospitals/' + currentHospitalId + '/deliveryBoys').doc(currentUser.uid); }
+
+// Minutes on duty today: the finished sessions plus the current one, if he is on duty now
+async function dutyMinutesToday(boyId, b) {
+  const snap = await db.collection('hospitals/' + currentHospitalId + '/deliveryBoys/' + boyId + '/dutySessions').where('date', '==', todayStr()).get().catch(() => ({ docs: [] }));
+  let mins = snap.docs.reduce((s, d) => s + (Number(d.data().minutes) || 0), 0);
+  if (isOnDutyToday(b) && b.onDutySince && b.onDutySince.toDate) mins += Math.max(0, Math.round((Date.now() - b.onDutySince.toDate().getTime()) / 60000));
+  return mins;
+}
+
+async function renderDutyCard() {
+  const el = document.getElementById('dutyCard');
+  if (!el) return;
+  const b = (await deliveryBoyRef().get()).data() || {};
+  const on = isOnDutyToday(b);
+  const hours = (Math.round((await dutyMinutesToday(currentUser.uid, b)) / 6) / 10);
+  el.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;padding:14px 16px;border-radius:12px;background:var(--surface2);border:1px solid var(--accent);">' +
+    '<div><strong>' + (on ? '🟢 You are ON duty' : '⚪ You are OFF duty') + '</strong>' +
+    '<div style="font-size:.8rem;color:var(--text2);margin-top:2px;">' + (on ? 'New deliveries will come to you.' : 'Switch on to get deliveries.') + ' Hours on duty today: ' + hours + ' h</div></div>' +
+    '<button class="btn ' + (on ? 'btn-secondary' : 'btn-primary') + ' btn-sm" style="width:auto;" onclick="toggleMyDuty()">' + (on ? 'Switch off' : 'Switch on') + '</button></div>';
+}
+
+async function toggleMyDuty() {
+  try {
+    const ref = deliveryBoyRef();
+    const b = (await ref.get()).data() || {};
+    if (isOnDutyToday(b)) {
+      const since = b.onDutySince && b.onDutySince.toDate ? b.onDutySince.toDate() : new Date();
+      const minutes = Math.max(0, Math.round((Date.now() - since.getTime()) / 60000));
+      await ref.collection('dutySessions').add({ date: todayStr(), minutes: minutes, endedAt: firebase.firestore.FieldValue.serverTimestamp() });
+      await ref.update({ onDuty: false, onDutySince: null });
+      showToast('You are off duty', 'success');
+    } else {
+      await ref.update({ onDuty: true, onDutyDate: todayStr(), onDutySince: firebase.firestore.FieldValue.serverTimestamp() });
+      showToast('You are on duty. New deliveries will come to you.', 'success');
+    }
+    renderDeliveryHome();
+  } catch (e) { showToast('Could not change duty: ' + e.message, 'error'); }
 }
 
 // The newest message the admin sent to this delivery boy (shown in the banner)
 async function loadDeliveryNotes() {
   const snap = await db.collection('hospitals/' + currentHospitalId + '/notifications').where('target', '==', 'delivery:' + currentUser.username).get().catch(() => ({ docs: [] }));
   return snap.docs.map(d => d.data()).sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+}
+
+// Live: the list updates by itself when an order is offered, accepted, or rated
+let _myOrdersUnsubs = [];
+function stopMyOrdersListeners() { _myOrdersUnsubs.forEach(u => u()); _myOrdersUnsubs = []; }
+function startMyOrdersListeners() {
+  stopMyOrdersListeners();
+  const ordersRef = db.collection('hospitals/' + currentHospitalId + '/pharmacyOrders');
+  const parts = { store: [], admin: [] };
+  const draw = () => {
+    if (!document.getElementById('myDeliveries')) { stopMyOrdersListeners(); return; }
+    const seen = new Set();
+    const docs = [...parts.store, ...parts.admin].filter(d => seen.has(d.id) ? false : (seen.add(d.id), true));
+    docs.sort((a, b) => (b.data().assignedAt?.seconds || 0) - (a.data().assignedAt?.seconds || 0));
+    renderMyDeliveries(docs);
+  };
+  _myOrdersUnsubs.push(ordersRef.where('deliveryPersonId', '==', currentUser.uid).onSnapshot(s => { parts.store = s.docs; draw(); }, () => {}));
+  _myOrdersUnsubs.push(ordersRef.where('assignedTo', '==', currentUser.uid).onSnapshot(s => { parts.admin = s.docs; draw(); }, () => {}));
+}
+
+function renderMyDeliveries(docs) {
+  const offers = docs.filter(d => d.data().deliveryOfferStatus === 'offered').length;
+  const ob = document.getElementById('offerBanner');
+  if (ob) ob.innerHTML = offers ? '<div style="margin-bottom:16px;padding:14px 16px;border-radius:12px;background:var(--surface2);border-left:4px solid var(--orange);"><strong>🔔 You have ' + offers + ' new delivery offer' + (offers > 1 ? 's' : '') + '.</strong> Accept or reject below.</div>' : '';
+  const rated = docs.map(d => d.data()).filter(o => typeof o.boyRating === 'number');
+  const avg = rated.length ? rated.reduce((s, o) => s + o.boyRating, 0) / rated.length : 0;
+  const rc = document.getElementById('ratingChip');
+  if (rc) rc.textContent = rated.length ? avg.toFixed(1) + ' / 5 · ' + rated.length + ' rating' + (rated.length > 1 ? 's' : '') : 'No ratings yet';
+  const el = document.getElementById('myDeliveries');
+  if (!el) return;
+  el.innerHTML = docs.length ? docs.map(d => deliveryOrderCardHtml(d.id, d.data())).join('') : '<div class="empty-state"><p>No deliveries assigned to you yet.</p></div>';
 }
 
 function starsText(n) { return '★'.repeat(Number(n) || 0) + '☆'.repeat(5 - (Number(n) || 0)); }
@@ -19665,6 +19791,62 @@ function deliveryRatingsHtml(o) {
   const prods = (o.productRatings || []).map(p => '<div style="font-size:.8rem;margin-top:2px;">' + escHtmlSafe(p.name || '') + ': ' + starsText(p.stars) + '</div>').join('');
   return '<div style="margin-top:8px;padding:8px 10px;background:var(--surface2);border-radius:8px;">' +
     '<div style="font-size:.8rem;"><strong>Customer rating for you:</strong> ' + starsText(o.boyRating) + '</div>' + prods + '</div>';
+}
+
+// He accepts an offer: the address and the route are shown from now on
+async function acceptDeliveryOffer(orderId) {
+  try {
+    await db.collection('hospitals/' + currentHospitalId + '/pharmacyOrders').doc(orderId).update({
+      deliveryOfferStatus: 'accepted', offerAcceptedAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+    showToast('Accepted. The address is shown now.', 'success');
+  } catch (e) { showToast('Could not accept: ' + e.message, 'error'); }
+}
+
+// He rejects an offer: the order goes back to the pharmacy, unassigned, and is offered to the next boy.
+// This boy is remembered on the order so it is not offered to him again.
+async function rejectDeliveryOffer(orderId) {
+  if (!confirm('Reject this delivery? It will be given to another delivery boy.')) return;
+  try {
+    await db.collection('hospitals/' + currentHospitalId + '/pharmacyOrders').doc(orderId).update({
+      deliveryOfferStatus: 'rejected', assignedTo: null, assignedToName: null,
+      deliveryPersonId: null, deliveryPersonName: null, deliveryPersonPhone: null,
+      rejectedBy: firebase.firestore.FieldValue.arrayUnion(currentUser.uid)
+    });
+    showToast('Rejected.', 'success');
+  } catch (e) { showToast('Could not reject: ' + e.message, 'error'); }
+}
+
+async function renderDeliveryHome() {
+  stopMyOrdersListeners();
+  const mc = document.getElementById('mainContent');
+  mc.innerHTML = '<div class="page-header"><h2>Hello, ' + escHtmlSafe(currentUser.name || 'there') + '</h2><p>Your deliveries and wallet.</p></div>' +
+    '<div id="dutyCard" style="margin-bottom:16px;"></div>' +
+    '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;">' +
+    '<div onclick="navigateTo(\'deliveryWallet\')" style="cursor:pointer;padding:14px 18px;border-radius:14px;background:var(--surface2);border:1px solid var(--accent);min-width:180px;">' +
+    '<div style="font-size:.78rem;color:var(--text2);">💰 Wallet (tap to see history)</div>' +
+    '<div id="walletChip" style="font-size:1.4rem;font-weight:800;margin-top:4px;">₹ …</div></div>' +
+    '<div style="padding:14px 18px;border-radius:14px;background:var(--surface2);border:1px solid var(--accent);min-width:180px;">' +
+    '<div style="font-size:.78rem;color:var(--text2);">⭐ My rating from customers</div>' +
+    '<div id="ratingChip" style="font-size:1.4rem;font-weight:800;margin-top:4px;">…</div></div></div>' +
+    '<div id="offerBanner"></div><div id="deliveryBanner"></div>' +
+    '<div class="table-container" style="padding:20px;max-width:720px;"><div class="section-title">My deliveries</div><div id="myDeliveries"><div class="empty-state"><p>Loading…</p></div></div></div>';
+  try {
+    const entries = await loadDeliveryWalletEntries();
+    const bal = entries.reduce((s, e) => s + (e.type === 'credit' ? 1 : -1) * (Number(e.amount) || 0), 0);
+    const chip = document.getElementById('walletChip');
+    if (chip) chip.textContent = '₹ ' + (Math.round(bal * 100) / 100);
+  } catch (e) { /* the wallet chip stays blank */ }
+  try { await renderDutyCard(); } catch (e) { /* the switch stays blank */ }
+  try {
+    const notes = await loadDeliveryNotes();
+    const latest = notes[0];
+    const ban = document.getElementById('deliveryBanner');
+    if (ban && latest) {
+      ban.innerHTML = '<div style="margin-bottom:16px;padding:14px 16px;border-radius:12px;background:var(--surface2);border-left:4px solid var(--accent);font-size:.88rem;"><strong>' + escHtmlSafe(latest.title || 'Message') + '</strong> ' + escHtmlSafe(latest.description || '') + '</div>';
+    }
+  } catch (e) { /* no banner */ }
+  startMyOrdersListeners();
 }
 
 // One delivery. A new offer shows the patient name, the medicines and the fee only.
@@ -19722,69 +19904,6 @@ function showDeliveryRoute(orderId, dLat, dLng) {
     () => { if (info) info.textContent = 'Turn on location to see where you are. The patient pin is shown.'; },
     { enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 }
   );
-}
-
-// He accepts an offer: the address and the route are shown from now on
-async function acceptDeliveryOffer(orderId) {
-  try {
-    await db.collection('hospitals/' + currentHospitalId + '/pharmacyOrders').doc(orderId).update({
-      deliveryOfferStatus: 'accepted', offerAcceptedAt: firebase.firestore.FieldValue.serverTimestamp()
-    });
-    showToast('Accepted. The address is shown now.', 'success');
-    renderDeliveryHome();
-  } catch (e) { showToast('Could not accept: ' + e.message, 'error'); }
-}
-
-// He rejects an offer: the order goes back to the pharmacy, unassigned, to give to another boy
-async function rejectDeliveryOffer(orderId) {
-  if (!confirm('Reject this delivery? It goes back to the pharmacy to give to another delivery boy.')) return;
-  try {
-    await db.collection('hospitals/' + currentHospitalId + '/pharmacyOrders').doc(orderId).update({
-      deliveryOfferStatus: 'rejected', assignedTo: null, assignedToName: null,
-      deliveryPersonId: null, deliveryPersonName: null, deliveryPersonPhone: null
-    });
-    showToast('Rejected. The pharmacy has been told.', 'success');
-    renderDeliveryHome();
-  } catch (e) { showToast('Could not reject: ' + e.message, 'error'); }
-}
-
-async function renderDeliveryHome() {
-  const mc = document.getElementById('mainContent');
-  mc.innerHTML = '<div class="page-header"><h2>Hello, ' + escHtmlSafe(currentUser.name || 'there') + '</h2><p>Your deliveries and wallet.</p></div>' +
-    '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;">' +
-    '<div onclick="navigateTo(\'deliveryWallet\')" style="cursor:pointer;padding:14px 18px;border-radius:14px;background:var(--surface2);border:1px solid var(--accent);min-width:180px;">' +
-    '<div style="font-size:.78rem;color:var(--text2);">💰 Wallet (tap to see history)</div>' +
-    '<div id="walletChip" style="font-size:1.4rem;font-weight:800;margin-top:4px;">₹ …</div></div>' +
-    '<div style="padding:14px 18px;border-radius:14px;background:var(--surface2);border:1px solid var(--accent);min-width:180px;">' +
-    '<div style="font-size:.78rem;color:var(--text2);">⭐ My rating from customers</div>' +
-    '<div id="ratingChip" style="font-size:1.4rem;font-weight:800;margin-top:4px;">…</div></div></div>' +
-    '<div id="deliveryBanner"></div>' +
-    '<div class="table-container" style="padding:20px;max-width:720px;"><div class="section-title">My deliveries</div><div id="myDeliveries"><div class="empty-state"><p>Loading…</p></div></div></div>';
-  try {
-    const entries = await loadDeliveryWalletEntries();
-    const bal = entries.reduce((s, e) => s + (e.type === 'credit' ? 1 : -1) * (Number(e.amount) || 0), 0);
-    const chip = document.getElementById('walletChip');
-    if (chip) chip.textContent = '₹ ' + (Math.round(bal * 100) / 100);
-  } catch (e) { /* the wallet chip stays blank */ }
-  try {
-    const [docs, notes] = await Promise.all([loadDeliveryMyOrders(), loadDeliveryNotes()]);
-    const offers = docs.filter(d => d.data().deliveryOfferStatus === 'offered').length;
-    const latest = notes[0];
-    const ban = document.getElementById('deliveryBanner');
-    if (ban && (offers || latest)) {
-      ban.innerHTML = '<div style="margin-bottom:16px;padding:14px 16px;border-radius:12px;background:var(--surface2);border-left:4px solid var(--accent);">' +
-        (offers ? '<div><strong>🔔 You have ' + offers + ' new delivery offer' + (offers > 1 ? 's' : '') + '.</strong> Accept or reject below.</div>' : '') +
-        (latest ? '<div style="margin-top:' + (offers ? 6 : 0) + 'px;font-size:.88rem;"><strong>' + escHtmlSafe(latest.title || 'Message') + '</strong> ' + escHtmlSafe(latest.description || '') + '</div>' : '') +
-        '</div>';
-    }
-    const rated = docs.map(d => d.data()).filter(o => typeof o.boyRating === 'number');
-    const avg = rated.length ? rated.reduce((s, o) => s + o.boyRating, 0) / rated.length : 0;
-    const rc = document.getElementById('ratingChip');
-    if (rc) rc.textContent = rated.length ? avg.toFixed(1) + ' / 5 · ' + rated.length + ' rating' + (rated.length > 1 ? 's' : '') : 'No ratings yet';
-    const el = document.getElementById('myDeliveries');
-    if (!docs.length) { el.innerHTML = '<div class="empty-state"><p>No deliveries assigned to you yet.</p></div>'; return; }
-    el.innerHTML = docs.map(d => deliveryOrderCardHtml(d.id, d.data())).join('');
-  } catch (e) { showToast('Could not load: ' + e.message, 'error'); }
 }
 
 // The wallet: the balance, and every money movement with its date and the balance after it
