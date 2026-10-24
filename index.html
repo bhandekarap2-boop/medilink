@@ -380,6 +380,7 @@ tr:hover td{background:var(--surface2);}
     <div style="display:flex;gap:6px;margin-bottom:16px;background:var(--surface2);padding:4px;border-radius:12px;">
       <div id="roleTabAdmin" onclick="setRole('admin')" style="flex:1;padding:10px;text-align:center;border-radius:9px;cursor:pointer;font-weight:700;font-size:.85rem;background:var(--accent);color:#000;">🏥 Admin</div>
       <div id="roleTabDoctor" onclick="setRole('doctor')" style="flex:1;padding:10px;text-align:center;border-radius:9px;cursor:pointer;font-weight:700;font-size:.85rem;color:var(--text2);">👨‍⚕️ Doctor</div>
+      <div id="roleTabDelivery" onclick="setRole('delivery')" style="flex:1;padding:10px;text-align:center;border-radius:9px;cursor:pointer;font-weight:700;font-size:.85rem;color:var(--text2);">🛵 Delivery</div>
       <div id="roleTabPatient" onclick="setRole('patient')" style="flex:1;padding:10px;text-align:center;border-radius:9px;cursor:pointer;font-weight:700;font-size:.85rem;color:var(--text2);">🧑 Patient</div>
     </div>
 
@@ -424,6 +425,12 @@ tr:hover td{background:var(--surface2);}
         <div id="rfidLoginStatus" style="margin-top:8px;font-size:.82rem;text-align:center;display:none;padding:8px;border-radius:8px;background:var(--surface2);color:var(--accent);">Place card on scanner...</div>
       </div>
 
+      <div id="deliveryLoginSection" style="display:none;">
+        <div style="font-weight:700;font-size:1rem;margin-bottom:14px;">Delivery Boy Login</div>
+        <div class="form-group"><label>Username</label><input type="text" id="dbLoginUser" placeholder="your username"/></div>
+        <div class="form-group"><label>Password</label><input type="password" id="dbLoginPass" placeholder="your password"/></div>
+        <button class="btn btn-primary" onclick="handleDeliveryLogin()" style="width:100%;padding:12px;font-weight:700;">Login</button>
+      </div>
       <div id="patientLoginSection" style="display:none;">
         <div style="font-weight:700;font-size:1rem;margin-bottom:14px;">Patient Login</div>
         <div class="form-group">
@@ -1121,7 +1128,8 @@ function setRole(role) {
   const tabs = {
     admin: document.getElementById('roleTabAdmin'),
     doctor: document.getElementById('roleTabDoctor'),
-    patient: document.getElementById('roleTabPatient')
+    patient: document.getElementById('roleTabPatient'),
+    delivery: document.getElementById('roleTabDelivery')
   };
   Object.keys(tabs).forEach(key => {
     const tab = tabs[key];
@@ -1138,6 +1146,8 @@ function setRole(role) {
   if (adminSection) adminSection.style.display = role === 'admin' ? 'block' : 'none';
   if (doctorSection) doctorSection.style.display = role === 'doctor' ? 'block' : 'none';
   if (patientSection) patientSection.style.display = role === 'patient' ? 'block' : 'none';
+  const deliverySection = document.getElementById('deliveryLoginSection');
+  if (deliverySection) deliverySection.style.display = role === 'delivery' ? 'block' : 'none';
 
   const adminTabs = document.getElementById('adminRegisterTabs');
   if (adminTabs) adminTabs.style.display = role === 'admin' ? 'flex' : 'none';
@@ -1545,6 +1555,7 @@ function chooseLoginHospital(i) {
 }
 
 async function handleLogin() {
+  if (selectedRole === 'delivery') { await handleDeliveryLogin(); return; }
   const emailOrId = document.getElementById('loginEmail').value.trim();
   const password = document.getElementById('loginPassword').value;
   const errEl = document.getElementById('loginError');
@@ -2667,6 +2678,7 @@ function _mfInitUiTranslationObserver() {
 // card (which needs the same feature-filtered list to build its editable list from).
 function getDefaultSidebarItems() {
   const menus = {
+    delivery: [{icon:'📦', label:'My Deliveries', page:'deliveryHome'}],
     admin: [
       {icon:'📊', label:'Dashboard', page:'dashboard'},
       {icon:'👨‍⚕️', label:'Doctors', page:'doctors'},
@@ -2847,6 +2859,7 @@ function navigateTo(page) {
     adminDevice: renderAdminDevice,
     adminDisplaySetup: renderAdminDisplaySetup,
     adminDeliveryBoys: renderAdminDeliveryBoys,
+    deliveryHome: renderDeliveryHome,
     superRecords: renderSuperRecords,
     superVideos: renderSuperVideos,
     adminQRPayment: renderAdminQRPayment,
@@ -19449,10 +19462,11 @@ async function createDeliveryBoy() {
   try {
     const dup = await db.collection('hospitals/' + currentHospitalId + '/deliveryBoys').where('username', '==', user).limit(1).get();
     if (!dup.empty) { showToast('That username is already used', 'error'); return; }
-    await db.collection('hospitals/' + currentHospitalId + '/deliveryBoys').add({
+    const boyRef = await db.collection('hospitals/' + currentHospitalId + '/deliveryBoys').add({
       name: name, email: email, username: user, passwordHash: await pwHash(pass), active: true,
       createdAt: firebase.firestore.FieldValue.serverTimestamp()
     });
+    await db.collection('deliveryDirectory').doc(user).set({ hospitalId: currentHospitalId, boyId: boyRef.id });
     ['dbName', 'dbEmail', 'dbUser', 'dbPass'].forEach(id => { document.getElementById(id).value = ''; });
     showToast('Delivery boy account created', 'success');
     loadDeliveryBoys();
@@ -19502,6 +19516,62 @@ async function assignDeliveryTask(boyId, username) {
     });
     showToast('Delivery assigned to @' + username, 'success');
   } catch (e) { showToast('Could not assign: ' + e.message, 'error'); }
+}
+
+// ============ DELIVERY BOY LOGIN AND HIS OWN SECTION ============
+// Signs a delivery boy in with his username and password (his account is made in Delivery Boys).
+async function handleDeliveryLogin() {
+  const errEl = document.getElementById('loginError');
+  errEl.textContent = '';
+  const user = (document.getElementById('dbLoginUser').value || '').trim().toLowerCase();
+  const pass = document.getElementById('dbLoginPass').value || '';
+  if (!user || !pass) { errEl.textContent = 'Enter your username and password.'; return; }
+  try {
+    let hid = null, boyDoc = null;
+    // 1. the username directory, written when the admin creates the account
+    const dir = await db.collection('deliveryDirectory').doc(user).get();
+    if (dir.exists) {
+      hid = dir.data().hospitalId;
+      const snap = await db.collection('hospitals/' + hid + '/deliveryBoys').where('username', '==', user).limit(1).get();
+      if (!snap.empty) boyDoc = snap.docs[0];
+    }
+    // 2. older accounts that have no directory entry
+    if (!boyDoc) {
+      const snap = await db.collectionGroup('deliveryBoys').where('username', '==', user).limit(1).get().catch(() => null);
+      if (snap && !snap.empty) { boyDoc = snap.docs[0]; hid = boyDoc.ref.parent.parent.id; }
+    }
+    if (!boyDoc) { errEl.textContent = 'Username not found. Ask the admin to create your account.'; return; }
+    const b = boyDoc.data();
+    if (!(await pwVerify(pass, b.passwordHash || ''))) { errEl.textContent = 'Incorrect password.'; return; }
+    if (!b.active) { errEl.textContent = 'Your account is switched off. Ask the admin to switch it on.'; return; }
+    currentUser = { ...b, uid: boyDoc.id, role: 'delivery', hospitalId: hid };
+    currentRole = 'delivery';
+    currentHospitalId = hid;
+    logAudit('login');
+    launchApp();
+  } catch (e) { errEl.textContent = 'Error: ' + e.message; }
+}
+
+// The delivery boy's own section: the orders the admin assigned to him
+async function renderDeliveryHome() {
+  const mc = document.getElementById('mainContent');
+  mc.innerHTML = '<div class="page-header"><h2>My Deliveries</h2><p>The medicine deliveries the admin has assigned to you.</p></div>' +
+    '<div class="table-container" style="padding:20px;max-width:720px;"><div id="myDeliveries"><div class="empty-state"><p>Loading…</p></div></div></div>';
+  try {
+    const snap = await db.collection('hospitals/' + currentHospitalId + '/pharmacyOrders').where('assignedTo', '==', currentUser.uid).get();
+    const el = document.getElementById('myDeliveries');
+    if (snap.empty) { el.innerHTML = '<div class="empty-state"><p>No deliveries assigned to you yet.</p></div>'; return; }
+    el.innerHTML = snap.docs.map(d => {
+      const o = d.data();
+      const map = (o.deliveryLat && o.deliveryLng) ? ('https://www.google.com/maps/dir/?api=1&destination=' + o.deliveryLat + ',' + o.deliveryLng) : '';
+      return '<div style="padding:14px 0;border-bottom:1px solid var(--border);">' +
+        '<strong>' + escHtmlSafe(o.patientName || 'Patient') + '</strong>' +
+        '<div style="font-size:.85rem;color:var(--text2);margin-top:4px;">' + escHtmlSafe(o.deliveryAddress || 'Address not given') + '</div>' +
+        '<div style="font-size:.8rem;margin-top:4px;">Status: ' + escHtmlSafe(o.status || '') + (o.deliveryKm ? ' · ' + o.deliveryKm + ' km' : '') + '</div>' +
+        (map ? '<a href="' + map + '" target="_blank" rel="noopener" class="btn btn-secondary btn-sm" style="text-decoration:none;margin-top:8px;display:inline-block;">Open in Google Maps</a>' : '') +
+        '</div>';
+    }).join('');
+  } catch (e) { showToast('Could not load: ' + e.message, 'error'); }
 }
 
 // ============ OWNER: FULL CONTROL OF A HOSPITAL ============
