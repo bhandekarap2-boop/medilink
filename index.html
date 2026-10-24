@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head><meta name="color-scheme" content="light"><style>html{background:#ffffff}</style>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"><script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <meta name="google-site-verification" content="ohiBhDwiOJ05_h4KyDgLw_Ysgn23fzVQHdBL1jjL_l4" />
 <meta name="google-adsense-account" content="ca-pub-8092288160889921">
 <meta charset="UTF-8"/>
@@ -19666,25 +19667,61 @@ function deliveryRatingsHtml(o) {
     '<div style="font-size:.8rem;"><strong>Customer rating for you:</strong> ' + starsText(o.boyRating) + '</div>' + prods + '</div>';
 }
 
-// One delivery. A new offer shows only the patient name and the medicines, with Accept and Reject.
-// The address and the route appear after he accepts.
+// One delivery. A new offer shows the patient name, the medicines and the fee only.
+// The address, the distance and the map appear after he accepts.
 function deliveryOrderCardHtml(id, o) {
   const items = (o.medicines || []).map(m => m.name || m.medicineName).filter(Boolean).join(', ');
+  const fee = '<div style="font-size:.85rem;margin-top:6px;">💰 Delivery fee for this order: <strong>₹ ' + (Number(o.deliveryCharge) || 0) + '</strong></div>';
   const head = '<strong>' + escHtmlSafe(o.patientName || 'Patient') + '</strong>' +
     '<div style="font-size:.8rem;color:var(--text2);margin-top:4px;">' + escHtmlSafe(items || 'Medicines') + ' · ₹ ' + (Number(o.total) || 0) + '</div>';
   if (o.deliveryOfferStatus === 'offered') {
-    return '<div style="padding:14px 0;border-bottom:1px solid var(--border);">' + head +
+    return '<div style="padding:14px 0;border-bottom:1px solid var(--border);">' + head + fee +
       '<div style="font-size:.82rem;margin-top:8px;color:var(--orange);">New delivery offer. The customer\'s address and location appear here after you accept.</div>' +
       '<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;">' +
       '<button class="btn btn-primary btn-sm" style="width:auto;" onclick="acceptDeliveryOffer(\'' + id + '\')">✅ Accept</button>' +
       '<button class="btn btn-secondary btn-sm" style="width:auto;" onclick="rejectDeliveryOffer(\'' + id + '\')">❌ Reject</button></div></div>';
   }
   const delivered = o.deliveryStatus === 'delivered' || o.status === 'fulfilled';
-  return '<div style="padding:14px 0;border-bottom:1px solid var(--border);">' + head +
-    '<div style="font-size:.85rem;color:var(--text2);margin-top:6px;">' + escHtmlSafe(o.deliveryAddress || 'Address not given') + '</div>' +
-    '<div style="font-size:.8rem;margin-top:4px;">Status: ' + escHtmlSafe(o.status || '') + (o.deliveryKm ? ' · ' + o.deliveryKm + ' km' : '') + '</div>' +
-    (o.deliveryLat && o.deliveryLng ? '<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;"><a href="https://www.google.com/maps/search/?api=1&query=' + o.deliveryLat + ',' + o.deliveryLng + '" class="btn btn-secondary btn-sm" style="text-decoration:none;">📍 Show location</a><a href="https://www.google.com/maps/dir/?api=1&destination=' + o.deliveryLat + ',' + o.deliveryLng + '&travelmode=driving" class="btn btn-primary btn-sm" style="text-decoration:none;">🧭 Start route</a></div>' : (o.deliveryAddress ? '<div style="margin-top:8px;"><a href="https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(o.deliveryAddress) + '" class="btn btn-secondary btn-sm" style="text-decoration:none;">📍 Show location</a></div>' : '')) +
+  const hasPin = !!(o.deliveryLat && o.deliveryLng);
+  const mapsFallback = hasPin
+    ? 'https://www.google.com/maps/search/?api=1&query=' + o.deliveryLat + ',' + o.deliveryLng
+    : 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(o.deliveryAddress || '');
+  return '<div style="padding:14px 0;border-bottom:1px solid var(--border);">' + head + fee +
+    '<div style="font-size:.85rem;margin-top:8px;"><strong>📍 Patient address:</strong> ' + escHtmlSafe(o.deliveryAddress || 'Address not given') + '</div>' +
+    '<div style="font-size:.8rem;margin-top:4px;">Status: ' + escHtmlSafe(o.status || '') + (o.deliveryKm ? ' · ' + o.deliveryKm + ' km from the store' : '') + '</div>' +
+    (!delivered ? '<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;">' +
+      '<button class="btn btn-primary btn-sm" style="width:auto;" onclick="showDeliveryRoute(\'' + id + '\',' + (hasPin ? o.deliveryLat + ',' + o.deliveryLng : 'null,null') + ')">📍 Show route</button>' +
+      '<a href="' + mapsFallback + '" class="btn btn-secondary btn-sm" style="text-decoration:none;">Open in Google Maps</a></div>' +
+      '<div id="map_' + id + '"></div>' : '') +
     deliveryRatingsHtml(o) + '</div>';
+}
+
+// Shows, inside the app, your own position, the customer's pin, and the distance between them.
+// If location is off, it still shows the customer's pin.
+function showDeliveryRoute(orderId, dLat, dLng) {
+  const box = document.getElementById('map_' + orderId);
+  if (!box) return;
+  if (typeof L === 'undefined') { box.innerHTML = '<div style="font-size:.82rem;color:var(--orange);margin-top:8px;">The map could not load. Use Open in Google Maps above.</div>'; return; }
+  if (dLat == null) { box.innerHTML = '<div style="font-size:.82rem;color:var(--orange);margin-top:8px;">This order has no map pin. Use the address above.</div>'; return; }
+  box.innerHTML = '<div id="mapCanvas_' + orderId + '" style="height:260px;border-radius:10px;margin-top:10px;"></div>' +
+    '<div id="mapInfo_' + orderId + '" style="font-size:.85rem;margin-top:6px;">Finding your location…</div>';
+  const map = L.map('mapCanvas_' + orderId).setView([dLat, dLng], 14);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(map);
+  L.marker([dLat, dLng]).addTo(map).bindPopup('Patient');
+  const info = document.getElementById('mapInfo_' + orderId);
+  const drawYou = (lat, lng) => {
+    L.marker([lat, lng]).addTo(map).bindPopup('You');
+    L.polyline([[lat, lng], [dLat, dLng]], { color: '#2563eb' }).addTo(map);
+    map.fitBounds([[lat, lng], [dLat, dLng]], { padding: [30, 30] });
+    const km = kmBetweenPoints(lat, lng, dLat, dLng);
+    if (info) info.innerHTML = '📏 About <strong>' + km.toFixed(1) + ' km</strong> away (straight line). Blue line: you to the patient.';
+  };
+  if (!navigator.geolocation) { if (info) info.textContent = 'This phone cannot read its location. The patient pin is shown.'; return; }
+  navigator.geolocation.getCurrentPosition(
+    pos => drawYou(pos.coords.latitude, pos.coords.longitude),
+    () => { if (info) info.textContent = 'Turn on location to see where you are. The patient pin is shown.'; },
+    { enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 }
+  );
 }
 
 // He accepts an offer: the address and the route are shown from now on
