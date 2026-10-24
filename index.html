@@ -361,16 +361,16 @@ tr:hover td{background:var(--surface2);}
 }
 </style>
 <style id="splashStyle">
-#splash{position:fixed;inset:0;z-index:99999;background:#ffffff;display:flex;flex-direction:column;align-items:center;justify-content:center;transition:opacity .5s ease;}
+#splash{position:fixed;inset:0;z-index:99999;background:#ffffff;display:flex;flex-direction:column;align-items:center;justify-content:center;transition:opacity .25s ease;}
 #splash.gone{opacity:0;pointer-events:none;}
-#splash img{width:200px;max-width:60%;height:auto;animation:splashFlow 2.4s ease-in-out both;}
+#splash img{width:200px;max-width:60%;height:auto;animation:splashFlow 1.1s ease-in-out both;}
 #splash .splash-text{position:absolute;bottom:90px;font-size:13px;letter-spacing:1px;color:#6b7280;}
 @keyframes splashFlow{0%{opacity:0;transform:translateX(0)}15%{opacity:1}30%{transform:translateX(-70px)}60%{transform:translateX(0)}80%{transform:translateX(70px)}100%{transform:translateX(0)}}
 </style>
 </head>
 <body>
 <div id="splash"><img src="/mediflow-logo.jpg" alt="MediFlow"><div class="splash-text">Opening MediFlow…</div></div>
-<script>setTimeout(function(){var s=document.getElementById("splash");if(!s)return;s.classList.add("gone");setTimeout(function(){s.remove();},600);},2600);</script>
+<script>(function(){var s=document.getElementById("splash"),t0=Date.now(),done=false;function hide(){if(done||!s)return;done=true;var wait=Math.max(0,1000-(Date.now()-t0));setTimeout(function(){s.classList.add("gone");setTimeout(function(){s.remove();},300);},wait);}if(document.readyState==="complete")hide();else window.addEventListener("load",hide);setTimeout(hide,2500);})();</script>
 
 <!-- PUBLIC PRESCRIPTION DOWNLOAD PAGE — reached from the emailed prescription's Download
      button, no login required. Hidden unless the URL has ?rx=<apptId>&h=<hospitalId>. -->
