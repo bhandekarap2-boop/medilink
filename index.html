@@ -2298,6 +2298,17 @@ async function restoreSession() {
   try { session = JSON.parse(raw); } catch(e) { clearSession(); return false; }
   if (!session || !session.role || !session.hospitalId) { clearSession(); return false; }
   try {
+    if (session.role === 'delivery') {
+      const boySnap = await db.collection('hospitals/' + session.hospitalId + '/deliveryBoys').doc(session.boyId).get();
+      if (!boySnap.exists || boySnap.data().active === false) { clearSession(); return false; }
+      const hospSnap = await db.collection('hospitals').doc(session.hospitalId).get();
+      if (hospSnap.exists && hospSnap.data().homeDelivery === false) { clearSession(); return false; }
+      currentUser = { ...boySnap.data(), uid: boySnap.id, role: 'delivery', hospitalId: session.hospitalId };
+      currentRole = 'delivery';
+      currentHospitalId = session.hospitalId;
+      launchApp();
+      return true;
+    }
     if (session.role === 'patient') {
       const snap = await db.collection('hospitals/' + session.hospitalId + '/patients').where('patientId','==',session.patientId).get();
       if (snap.empty) { clearSession(); return false; }
@@ -19689,6 +19700,7 @@ async function handleDeliveryLogin() {
     currentUser = { ...b, uid: boyDoc.id, role: 'delivery', hospitalId: hid };
     currentRole = 'delivery';
     currentHospitalId = hid;
+    saveSession({ role: 'delivery', hospitalId: hid, boyId: boyDoc.id });
     logAudit('login');
     launchApp();
   } catch (e) { errEl.textContent = 'Error: ' + e.message; }
