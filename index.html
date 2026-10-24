@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
+<head><meta name="color-scheme" content="light"><style>html{background:#ffffff}</style>
 <meta name="google-site-verification" content="ohiBhDwiOJ05_h4KyDgLw_Ysgn23fzVQHdBL1jjL_l4" />
 <meta name="google-adsense-account" content="ca-pub-8092288160889921">
 <meta charset="UTF-8"/>
@@ -361,16 +361,19 @@ tr:hover td{background:var(--surface2);}
 }
 </style>
 <style id="splashStyle">
-#splash{position:fixed;inset:0;z-index:99999;background:#ffffff;display:flex;flex-direction:column;align-items:center;justify-content:center;transition:opacity .25s ease;}
+#splash{position:fixed;inset:0;z-index:99999;background:#ffffff;display:flex;flex-direction:column;align-items:center;justify-content:center;transition:opacity .3s ease;overflow:hidden;}
 #splash.gone{opacity:0;pointer-events:none;}
-#splash img{width:200px;max-width:60%;height:auto;animation:splashFlow 1.1s ease-in-out both;}
+#splash .splash-row{display:flex;align-items:center;justify-content:center;}
+#splash .splash-logo{width:96px;height:auto;flex:none;animation:splashIn .4s ease-out both;}
+#splash .splash-word{display:inline-block;overflow:hidden;white-space:nowrap;width:0;font:800 30px/1 Arial,Helvetica,sans-serif;color:#1e3a8a;animation:splashWrite 1.1s linear .45s forwards;}
 #splash .splash-text{position:absolute;bottom:90px;font-size:13px;letter-spacing:1px;color:#6b7280;}
-@keyframes splashFlow{0%{opacity:0;transform:translateX(0)}15%{opacity:1}30%{transform:translateX(-70px)}60%{transform:translateX(0)}80%{transform:translateX(70px)}100%{transform:translateX(0)}}
+@keyframes splashIn{from{opacity:0;transform:scale(.8)}to{opacity:1;transform:scale(1)}}
+@keyframes splashWrite{from{width:0}to{width:172px}}
 </style>
 </head>
 <body>
-<div id="splash"><img src="/mediflow-logo.jpg" alt="MediFlow"><div class="splash-text">Opening MediFlow…</div></div>
-<script>setTimeout(function(){var s=document.getElementById("splash");if(!s)return;s.classList.add("gone");setTimeout(function(){s.remove();},250);},1000);</script>
+<div id="splash"><div class="splash-row"><img class="splash-logo" src="/mediflow-logo.jpg" alt="MediFlow"><span class="splash-word">&nbsp;MediFlow</span></div><div class="splash-text">Opening MediFlow…</div></div>
+<script>setTimeout(function(){var s=document.getElementById("splash");if(!s)return;s.classList.add("gone");setTimeout(function(){s.remove();},250);},2100);</script>
 
 <!-- PUBLIC PRESCRIPTION DOWNLOAD PAGE — reached from the emailed prescription's Download
      button, no login required. Hidden unless the URL has ?rx=<apptId>&h=<hospitalId>. -->
