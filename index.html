@@ -1709,6 +1709,13 @@ function launchApp() {
   loadCachedHospitalFeatures();
   loadCachedHospitalRfidDevices();
   buildSidebar();
+  if (currentRole === 'admin' && currentHospitalId) {
+    db.collection('hospitals').doc(currentHospitalId).get().then(s => {
+      window._homeDelivery = s.exists ? s.data().homeDelivery !== false : true;
+      currentHospitalHomeDelivery = window._homeDelivery;
+      buildSidebar();
+    }).catch(() => {});
+  }
   navigateTo(currentRole === 'admin' ? 'dashboard' : currentRole === 'doctor' ? 'docDashboard' : 'patDashboard');
   // Deep link from WhatsApp/SMS (?go=patMedStore): after login, land straight on that page.
   try {
@@ -2780,6 +2787,7 @@ function getDefaultSidebarItems() {
   }
   // Hide any nav item whose feature was switched off for this hospital in Settings.
   return (menus[currentRole] || []).filter(m => {
+    if (m.page === 'adminDeliveryBoys' && window._homeDelivery === false) return false;
     const key = pageFeatureKey(m.page);
     return !key || isFeatureOn(key);
   });
@@ -5669,7 +5677,7 @@ async function renderPatMedStore() {
       <div class="form-group"><label>Fulfillment</label>
         <div style="display:flex;gap:8px;">
           <button type="button" id="patMedFulfillPickup" class="btn btn-secondary" style="flex:1;" onclick="setPatMedFulfillment('pickup')">🏪 Store Pickup</button>
-          <button type="button" id="patMedFulfillDelivery" class="btn btn-secondary" style="flex:1;" onclick="setPatMedFulfillment('delivery')">🚚 Home Delivery</button>
+          <button type="button" id="patMedFulfillDelivery" class="btn btn-secondary" style="flex:1;${currentHospitalHomeDelivery === false ? 'display:none;' : ''}" onclick="setPatMedFulfillment('delivery')">🚚 Home Delivery</button>
         </div>
       </div>
       <div class="form-group" id="patMedAddressGroup" style="display:none;"></div>
@@ -5703,6 +5711,7 @@ async function loadPatMedCatalog() {
     _patMedCatalog = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     const hd = hospSnap.exists ? hospSnap.data() : {};
     currentHospitalPharmacyDeliveryChargePat = hd.pharmacyDeliveryCharge || 0;
+    currentHospitalHomeDelivery = hd.homeDelivery !== false;
     currentHospitalStorePat = (hd.storeLat && hd.storeLng && hd.deliveryRatePerKm) ? { lat: hd.storeLat, lng: hd.storeLng, rate: hd.deliveryRatePerKm } : null;
     currentHospitalGstPercentPat = (getCustomization('medStoreShowGST') && hd.gstPercent) ? hd.gstPercent : 0;
     _patMedStoreOpen = isPharmacyOpenNow(hd);
@@ -5896,6 +5905,8 @@ function computePatMedTotals() {
   return { subtotal, gstPercent, gstAmount, deliveryCharge, total, deliveryKm: _patMedKm };
 }
 let currentHospitalPharmacyDeliveryChargePat = 0;
+let currentHospitalHomeDelivery = true;   // false when the medical store has turned home delivery off
+window._homeDelivery = true;
 let currentHospitalStorePat = null;   // { lat, lng, rate } when the store has set a per-km charge
 let _patMedKm = null;                 // distance of the chosen delivery address, for the cart and the order
 let currentHospitalGstPercentPat = 0;
@@ -13353,6 +13364,7 @@ async function renderAdminPharmacy() {
         <div class="section-title">🚚 Patient Ordering — Delivery Charge</div>
         <p style="font-size:.8rem;color:var(--text2);margin-bottom:10px;">Charged on top of the medicine total when a patient chooses home delivery (in the app or WhatsApp). Store pickup is always free.</p>
         <div class="form-group"><label>Delivery Charge (₹)</label><input id="pharmacyDeliveryChargeInput" type="number" min="0" placeholder="0" value="${currentHospitalPharmacyDeliveryCharge || 0}"/></div>
+        <div class="form-group" style="display:flex;align-items:center;gap:10px;margin-top:12px;"><input id="homeDeliveryInput" type="checkbox" style="width:auto;" ${(currentHospitalHomeDelivery === false) ? '' : 'checked'}/><label for="homeDeliveryInput" style="margin:0;">Keep home delivery on (turn off to remove the delivery section for this hospital)</label></div>
         <button class="btn btn-primary" style="width:100%;" onclick="savePharmacyDeliveryCharge()">💾 Save</button>
       </div>
       <div class="table-container" style="padding:20px;">
@@ -14392,8 +14404,12 @@ async function dismissPharmacyMessage(id) {
 async function savePharmacyDeliveryCharge() {
   const val = parseInt(document.getElementById('pharmacyDeliveryChargeInput').value) || 0;
   try {
-    await db.collection('hospitals').doc(currentHospitalId).update({ pharmacyDeliveryCharge: val });
+    const homeOn = !!document.getElementById('homeDeliveryInput') && document.getElementById('homeDeliveryInput').checked;
+    await db.collection('hospitals').doc(currentHospitalId).update({ pharmacyDeliveryCharge: val, homeDelivery: homeOn });
     currentHospitalPharmacyDeliveryCharge = val;
+    currentHospitalHomeDelivery = homeOn;
+    window._homeDelivery = homeOn;
+    buildSidebar();
     showToast('✅ Delivery charge set to ₹' + val, 'success');
   } catch(e) { showToast('❌ ' + e.message, 'error'); }
 }
@@ -14405,6 +14421,8 @@ async function loadPharmacyInventory() {
     const hospSnap = await db.collection('hospitals').doc(currentHospitalId).get();
     _pharmacyHospGst = hospSnap.exists ? (hospSnap.data().gstPercent || 0) : 0;
     currentHospitalPharmacyDeliveryCharge = hospSnap.exists ? (hospSnap.data().pharmacyDeliveryCharge || 0) : 0;
+    currentHospitalHomeDelivery = hospSnap.exists ? hospSnap.data().homeDelivery !== false : true;
+    window._homeDelivery = currentHospitalHomeDelivery;
     const dcInput = document.getElementById('pharmacyDeliveryChargeInput');
     if (dcInput) dcInput.value = currentHospitalPharmacyDeliveryCharge;
     const hd = hospSnap.exists ? hospSnap.data() : {};
@@ -19544,6 +19562,8 @@ async function handleDeliveryLogin() {
     const b = boyDoc.data();
     if (!(await pwVerify(pass, b.passwordHash || ''))) { errEl.textContent = 'Incorrect password.'; return; }
     if (!b.active) { errEl.textContent = 'Your account is switched off. Ask the admin to switch it on.'; return; }
+    const hosp = await db.collection('hospitals').doc(hid).get();
+    if (hosp.exists && hosp.data().homeDelivery === false) { errEl.textContent = 'Home delivery is turned off for this medical store.'; return; }
     currentUser = { ...b, uid: boyDoc.id, role: 'delivery', hospitalId: hid };
     currentRole = 'delivery';
     currentHospitalId = hid;
