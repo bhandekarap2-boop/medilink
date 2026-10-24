@@ -20040,7 +20040,10 @@ async function submitBoyScanCode() {
 
 // Camera: reads one barcode at a time. Stops after each read, so the same barcode is not read twice.
 async function startBoyCamera() {
-  if (!('BarcodeDetector' in window) && !(await loadZxing())) { setBoyScanMsg('This phone cannot read barcodes with the camera. Type the barcode number instead.'); return; }
+  if (!('BarcodeDetector' in window)) {
+    setBoyScanMsg('Loading the barcode reader…');
+    if (!(await loadZxing())) { setBoyScanMsg('The barcode reader could not load. Check the internet connection, then tap Scan again. You can also type the number.'); return; }
+  }
   try {
     _boyScan.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
   } catch (e) { setBoyScanMsg('Could not open the camera: ' + e.message); return; }
@@ -20048,15 +20051,17 @@ async function startBoyCamera() {
   await renderBoyScan();
 }
 
+// The barcode reader is served from this site; the CDN is a second try if that fails.
 function loadZxing() {
   if (window.ZXing) return Promise.resolve(true);
-  return new Promise(resolve => {
+  const tryLoad = src => new Promise(resolve => {
     const s = document.createElement('script');
-    s.src = 'https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js';
+    s.src = src;
     s.onload = () => resolve(!!window.ZXing);
-    s.onerror = () => resolve(false);
+    s.onerror = () => { s.remove(); resolve(false); };
     document.head.appendChild(s);
   });
+  return tryLoad('/zxing.min.js').then(ok => ok || tryLoad('https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js'));
 }
 let _zxingReader = null;
 function attachZxingReader(video) {

@@ -3160,6 +3160,7 @@ app.get('/ads.txt', (req, res) => {
 });
 app.get('/mediflow-logo.png', (req, res) => res.sendFile(path.join(__dirname, 'mediflow-logo.png')));
 app.get('/mediflow-logo.jpg', (req, res) => res.sendFile(path.join(__dirname, 'mediflow-logo.jpg')));
+app.get('/zxing.min.js', (req, res) => res.type('application/javascript').sendFile(path.join(__dirname, 'zxing.min.js')));
 
 // Same "untraced static file" issue as the logo above — Node File Trace only follows literal
 // path.join(__dirname, 'x') string arguments; a loop building the path from a variable (as this
