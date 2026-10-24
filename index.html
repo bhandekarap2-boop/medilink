@@ -370,7 +370,7 @@ tr:hover td{background:var(--surface2);}
 </head>
 <body>
 <div id="splash"><img src="/mediflow-logo.jpg" alt="MediFlow"><div class="splash-text">Opening MediFlow…</div></div>
-<script>(function(){var s=document.getElementById("splash"),t0=Date.now(),done=false;function hide(){if(done||!s)return;done=true;var wait=Math.max(0,1000-(Date.now()-t0));setTimeout(function(){s.classList.add("gone");setTimeout(function(){s.remove();},300);},wait);}if(document.readyState==="complete")hide();else window.addEventListener("load",hide);setTimeout(hide,2500);})();</script>
+<script>setTimeout(function(){var s=document.getElementById("splash");if(!s)return;s.classList.add("gone");setTimeout(function(){s.remove();},250);},1000);</script>
 
 <!-- PUBLIC PRESCRIPTION DOWNLOAD PAGE — reached from the emailed prescription's Download
      button, no login required. Hidden unless the URL has ?rx=<apptId>&h=<hospitalId>. -->
