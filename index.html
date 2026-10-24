@@ -360,8 +360,17 @@ tr:hover td{background:var(--surface2);}
   50% { box-shadow: 0 0 0 8px rgba(0,212,255,0); border-color: #fff; }
 }
 </style>
+<style id="splashStyle">
+#splash{position:fixed;inset:0;z-index:99999;background:#ffffff;display:flex;flex-direction:column;align-items:center;justify-content:center;transition:opacity .5s ease;}
+#splash.gone{opacity:0;pointer-events:none;}
+#splash img{width:200px;max-width:60%;height:auto;animation:splashFlow 2.4s ease-in-out both;}
+#splash .splash-text{position:absolute;bottom:90px;font-size:13px;letter-spacing:1px;color:#6b7280;}
+@keyframes splashFlow{0%{opacity:0;transform:translateX(0)}15%{opacity:1}30%{transform:translateX(-70px)}60%{transform:translateX(0)}80%{transform:translateX(70px)}100%{transform:translateX(0)}}
+</style>
 </head>
 <body>
+<div id="splash"><img src="/mediflow-logo.jpg" alt="MediFlow"><div class="splash-text">Opening MediFlow…</div></div>
+<script>setTimeout(function(){var s=document.getElementById("splash");if(!s)return;s.classList.add("gone");setTimeout(function(){s.remove();},600);},2600);</script>
 
 <!-- PUBLIC PRESCRIPTION DOWNLOAD PAGE — reached from the emailed prescription's Download
      button, no login required. Hidden unless the URL has ?rx=<apptId>&h=<hospitalId>. -->
@@ -6060,6 +6069,41 @@ function orderTrackerHtml(o) {
   ).join('') + '</div>' +
   '<div style="font-size:.8rem;font-weight:700;color:var(--accent);margin-bottom:2px;">📍 ' + where[idx] + '</div>';
 }
+// After the order is delivered, the patient rates the delivery boy and each product (1 to 5 stars)
+const RATING_WORDS = ['Poor', 'Fair', 'Good', 'Very good', 'Excellent'];
+function renderDeliveryRatingHtml(id, o) {
+  const delivered = o.deliveryStatus === 'delivered' || o.status === 'fulfilled';
+  const hasBoy = !!(o.deliveryPersonId || o.assignedTo);
+  if (!delivered || !hasBoy || typeof o.boyRating === 'number') return '';
+  const opts = '<option value="">Choose…</option>' + [5, 4, 3, 2, 1].map(n => '<option value="' + n + '">' + n + ' ★ ' + RATING_WORDS[n - 1] + '</option>').join('');
+  const names = (o.medicines || []).map(m => m.name || m.medicineName).filter(Boolean);
+  return '<div style="margin-top:10px;background:var(--surface2);border-radius:10px;padding:10px;">' +
+    '<div style="font-weight:700;font-size:.85rem;margin-bottom:6px;">⭐ Rate your delivery</div>' +
+    '<label style="font-size:.8rem;display:block;">Delivery boy' + (o.deliveryPersonName ? ' (' + escHtmlSafe(o.deliveryPersonName) + ')' : '') + '</label>' +
+    '<select id="rbBoy_' + id + '">' + opts + '</select>' +
+    names.map((n, i) => '<label style="font-size:.8rem;display:block;margin-top:6px;">' + escHtmlSafe(n) + '</label><select id="rbProd_' + id + '_' + i + '">' + opts + '</select>').join('') +
+    '<button class="btn btn-primary btn-sm" style="width:auto;margin-top:8px;" onclick="submitDeliveryRating(\'' + id + '\')">Submit rating</button></div>';
+}
+
+async function submitDeliveryRating(orderId) {
+  const boy = Number((document.getElementById('rbBoy_' + orderId) || {}).value || 0);
+  if (!boy) { showToast('Please rate the delivery boy', 'error'); return; }
+  try {
+    const ref = db.collection('hospitals/' + currentHospitalId + '/pharmacyOrders').doc(orderId);
+    const o = (await ref.get()).data() || {};
+    const names = (o.medicines || []).map(m => m.name || m.medicineName).filter(Boolean);
+    const productRatings = [];
+    for (let i = 0; i < names.length; i++) {
+      const v = Number((document.getElementById('rbProd_' + orderId + '_' + i) || {}).value || 0);
+      if (!v) { showToast('Please rate every product: ' + names[i], 'error'); return; }
+      productRatings.push({ name: names[i], stars: v });
+    }
+    await ref.update({ boyRating: boy, productRatings: productRatings, ratedAt: firebase.firestore.FieldValue.serverTimestamp() });
+    showToast('Thank you for your rating!', 'success');
+    loadPatMedOwnOrders();
+  } catch (e) { showToast('Could not save the rating: ' + e.message, 'error'); }
+}
+
 function renderPatMedOrderCard(id, o) {
   const when = o.createdAt?.toDate ? o.createdAt.toDate().toLocaleString('en-IN') : '';
   const payLabel = MED_ORDER_PAYMENT_LABELS[o.paymentStatus] || MED_ORDER_PAYMENT_LABELS.awaiting_payment;
@@ -6068,6 +6112,7 @@ function renderPatMedOrderCard(id, o) {
     '<div style="font-size:.85rem;margin-top:4px;">' + (o.medicines||[]).map(m => (m.name || m.medicineName) + ((m.qty || m.estimatedQty) ? ' × ' + (m.qty || m.estimatedQty) : '')).join(', ') + '</div>' +
     (o.total ? '<div style="font-weight:700;margin-top:4px;">₹' + o.total + ' <span style="font-size:.76rem;font-weight:700;color:' + payLabel[1] + ';">• ' + payLabel[0] + '</span></div>' : '') +
     orderTrackerHtml(o) +
+    renderDeliveryRatingHtml(id, o) +
     (o.deliveryCode && o.deliveryStatus === 'code_sent'
       ? '<div style="margin-top:8px;background:var(--surface2);border:2px dashed var(--accent);border-radius:10px;padding:10px;text-align:center;"><div style="font-size:.72rem;color:var(--text2);">Your delivery OTP — tell it only to the delivery boy</div><div style="font-size:1.8rem;font-weight:800;letter-spacing:6px;color:var(--accent);">' + o.deliveryCode + '</div></div>' : '') +
     (o.deliveryPersonName ? (
@@ -13906,7 +13951,7 @@ async function loadDeliveryStaffList() {
   const oldList = snap.docs.map(d => ({ id: d.id, ...d.data() }));
   // the delivery boys made in the Delivery Boys page are listed too, when they are on duty
   const newSnap = await db.collection('hospitals/' + currentHospitalId + '/deliveryBoys').get().catch(() => ({ docs: [] }));
-  const newList = newSnap.docs.filter(d => d.data().active !== false).map(d => ({ id: d.id, name: d.data().name || d.data().username || 'Delivery boy', role: 'Delivery Staff' }));
+  const newList = newSnap.docs.filter(d => d.data().active !== false).map(d => ({ id: d.id, name: d.data().name || d.data().username || 'Delivery boy', phone: d.data().phone || '', role: 'Delivery Staff' }));
   _deliveryStaffList = [...oldList, ...newList];
   return _deliveryStaffList;
 }
@@ -14006,18 +14051,14 @@ async function assignDeliveryStaff(orderId, selectId) {
     const orderRef = db.collection('hospitals/' + currentHospitalId + '/pharmacyOrders').doc(orderId);
     const cur = (await orderRef.get()).data() || {};
     if (!staff.free && cur.deliveryPersonId !== staff.id) { showToast('❌ ' + staff.name + ' is busy with another order', 'error'); loadPatientMedOrders(); return; }
-    await orderRef.update({ deliveryPersonId: staff.id, deliveryPersonName: staff.name, deliveryPersonPhone: staff.phone || '' });
+    await orderRef.update({ deliveryPersonId: staff.id, deliveryPersonName: staff.name, deliveryPersonPhone: staff.phone || '', deliveryOfferStatus: cur.deliveryPersonId === staff.id ? (cur.deliveryOfferStatus || 'accepted') : 'offered' });
     const patSnap = await db.collection('hospitals/' + currentHospitalId + '/patients').where('patientId','==',cur.patientId).get();
     const phone = !patSnap.empty ? patSnap.docs[0].data().phone : '';
     if (phone) sendViaWhatsAppCloudApi(phone, 'Your order ' + (cur.orderNumber||'') + ' will be delivered by ' + staff.name + (staff.phone ? ' (phone: ' + staff.phone + ')' : '') + '.',
       await waOrderUpdateTpl(cur.patientName, cur.orderNumber, 'Delivery person assigned: ' + staff.name + (staff.phone ? ', phone ' + staff.phone : ''))).catch(() => {});
     if (staff.phone) sendViaWhatsAppCloudApi(staff.phone,
-      '📦 New delivery assigned: order ' + (cur.orderNumber||'') + ' for ' + (cur.patientName||'a patient') + '.\n' +
-      'Items: ' + (cur.medicines||[]).map(m => (m.name||m.medicineName) + ' × ' + (m.qty||m.estimatedQty)).join(', ') + '\n' +
-      'Total: ₹' + (cur.total||0) + (cur.paymentStatus === 'approved' ? ' (already paid)' : ' (collect on delivery)') + '\n' +
-      (cur.deliveryAddress ? 'Address: ' + cur.deliveryAddress + '\n' : '') +
-      'Patient phone: ' + (phone || '—')
-    ).catch(() => {});
+      '📦 New delivery offer (order ' + (cur.orderNumber||'') + '). Open the MediFlow app, My Deliveries, and accept or reject it. The customer address is shown after you accept.',
+      await waOrderUpdateTpl(staff.name, cur.orderNumber, 'New delivery offer: open My Deliveries to accept or reject')).catch(() => {});
     showToast('✅ Assigned to ' + staff.name, 'success');
     renderDeliveryLookupResult(); loadPatientMedOrders(); renderDeliveryBoysPanel();
   } catch(e) { showToast('❌ ' + e.message, 'error'); }
@@ -19468,6 +19509,7 @@ async function renderAdminDeliveryBoys() {
     '<div class="section-title">Create a delivery boy account</div>' +
     '<div class="form-group"><label>Full name</label><input id="dbName" placeholder="e.g. Ravi Kumar"/></div>' +
     '<div class="form-group"><label>Email</label><input id="dbEmail" type="email" placeholder="ravi@example.com"/></div>' +
+    '<div class="form-group"><label>WhatsApp number (for delivery offers)</label><input id="dbPhone" type="tel" placeholder="10-digit mobile number"/></div>' +
     '<div class="form-group"><label>Username (for the delivery login)</label><input id="dbUser" placeholder="ravi"/></div>' +
     '<div class="form-group"><label>Password</label><input id="dbPass" type="password" placeholder="At least 6 characters"/></div>' +
     '<button class="btn btn-primary" style="width:auto;" onclick="createDeliveryBoy()">Create account</button></div>' +
@@ -19480,17 +19522,19 @@ async function createDeliveryBoy() {
   const email = (document.getElementById('dbEmail').value || '').trim().toLowerCase();
   const user = (document.getElementById('dbUser').value || '').trim().toLowerCase();
   const pass = document.getElementById('dbPass').value || '';
+  const phone = (document.getElementById('dbPhone').value || '').replace(/\D/g, '');
   if (!name || !email || !user || pass.length < 6) { showToast('Fill every field. The password needs 6 characters.', 'error'); return; }
+  if (phone.length < 10) { showToast('Enter the 10-digit WhatsApp number of the delivery boy', 'error'); return; }
   if (!/^[a-z0-9_.-]{3,20}$/.test(user)) { showToast('Username: 3 to 20 letters, numbers, dot, dash or underscore', 'error'); return; }
   try {
     const dup = await db.collection('hospitals/' + currentHospitalId + '/deliveryBoys').where('username', '==', user).limit(1).get();
     if (!dup.empty) { showToast('That username is already used', 'error'); return; }
     const boyRef = await db.collection('hospitals/' + currentHospitalId + '/deliveryBoys').add({
-      name: name, email: email, username: user, passwordHash: await pwHash(pass), active: true,
+      name: name, email: email, phone: phone, username: user, passwordHash: await pwHash(pass), active: true,
       createdAt: firebase.firestore.FieldValue.serverTimestamp()
     });
     await db.collection('deliveryDirectory').doc(user).set({ hospitalId: currentHospitalId, boyId: boyRef.id });
-    ['dbName', 'dbEmail', 'dbUser', 'dbPass'].forEach(id => { document.getElementById(id).value = ''; });
+    ['dbName', 'dbEmail', 'dbPhone', 'dbUser', 'dbPass'].forEach(id => { document.getElementById(id).value = ''; });
     showToast('Delivery boy account created', 'success');
     loadDeliveryBoys();
   } catch (e) { showToast('Could not create: ' + e.message, 'error'); }
@@ -19523,7 +19567,8 @@ async function toggleDeliveryBoy(id, on) {
   } catch (e) { showToast('Could not update: ' + e.message, 'error'); }
 }
 
-// Picks the first home-delivery order that is not yet assigned, and sends the boy a notification
+// Picks the first home-delivery order that is not yet assigned and offers it to the boy. He accepts or rejects it.
+// He is told by WhatsApp and in his banner. The customer's address is not sent until he accepts.
 async function assignDeliveryTask(boyId, username) {
   try {
     const snap = await db.collection('hospitals/' + currentHospitalId + '/pharmacyOrders').where('fulfillment', '==', 'delivery').where('status', '==', 'pending').limit(20).get();
@@ -19531,13 +19576,19 @@ async function assignDeliveryTask(boyId, username) {
     if (!open.length) { showToast('No unassigned delivery orders right now', 'error'); return; }
     const order = open[0];
     const o = order.data();
-    const to = (o.patientName || 'patient') + ' - ' + (o.deliveryAddress || 'address not given');
-    await order.ref.update({ assignedTo: boyId, assignedToName: username, assignedAt: firebase.firestore.FieldValue.serverTimestamp() });
+    const boy = ((await db.collection('hospitals/' + currentHospitalId + '/deliveryBoys').doc(boyId).get()).data()) || {};
+    await order.ref.update({ assignedTo: boyId, assignedToName: username, assignedAt: firebase.firestore.FieldValue.serverTimestamp(), deliveryOfferStatus: 'offered' });
     await db.collection('hospitals/' + currentHospitalId + '/notifications').add({
-      title: 'New delivery task', description: 'Deliver to ' + to, link: '', target: 'delivery:' + username,
+      title: 'New delivery offer', description: 'Open My Deliveries to accept or reject it.', link: '', target: 'delivery:' + username,
       sentBy: currentUser.name || 'Admin', createdAt: firebase.firestore.FieldValue.serverTimestamp(), date: todayStr()
     });
-    showToast('Delivery assigned to @' + username, 'success');
+    let sent = false;
+    if (boy.phone) {
+      sent = await sendViaWhatsAppCloudApi(boy.phone,
+        '📦 New delivery offer (order ' + (o.orderNumber || '') + '). Open the MediFlow app, My Deliveries, and accept or reject it. The customer address is shown after you accept.',
+        await waOrderUpdateTpl(boy.name || username, o.orderNumber, 'New delivery offer: open My Deliveries to accept or reject'));
+    }
+    showToast('Offer sent to @' + username + (boy.phone ? (sent ? ' (WhatsApp sent)' : ' (WhatsApp failed)') : ' (no WhatsApp number on file)'), 'success');
   } catch (e) { showToast('Could not assign: ' + e.message, 'error'); }
 }
 
@@ -19585,14 +19636,89 @@ async function loadDeliveryWalletEntries() {
   return snap.docs.map(d => ({ id: d.id, ...d.data() }));
 }
 
-// The delivery boy's home: the wallet at the top left, then his deliveries
+// The delivery boy's home: the rating and the wallet at the top, the banner, then his deliveries
+async function loadDeliveryMyOrders() {
+  const ordersRef = db.collection('hospitals/' + currentHospitalId + '/pharmacyOrders');
+  const [byStore, byAdmin] = await Promise.all([
+    ordersRef.where('deliveryPersonId', '==', currentUser.uid).get().catch(() => ({ docs: [] })),
+    ordersRef.where('assignedTo', '==', currentUser.uid).get().catch(() => ({ docs: [] }))
+  ]);
+  const seen = new Set();
+  return [...byStore.docs, ...byAdmin.docs].filter(d => seen.has(d.id) ? false : (seen.add(d.id), true));
+}
+
+// The newest message the admin sent to this delivery boy (shown in the banner)
+async function loadDeliveryNotes() {
+  const snap = await db.collection('hospitals/' + currentHospitalId + '/notifications').where('target', '==', 'delivery:' + currentUser.username).get().catch(() => ({ docs: [] }));
+  return snap.docs.map(d => d.data()).sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+}
+
+function starsText(n) { return '★'.repeat(Number(n) || 0) + '☆'.repeat(5 - (Number(n) || 0)); }
+
+// The customer's ratings of this delivery: his own star rating and each product's
+function deliveryRatingsHtml(o) {
+  if (typeof o.boyRating !== 'number') return '';
+  const prods = (o.productRatings || []).map(p => '<div style="font-size:.8rem;margin-top:2px;">' + escHtmlSafe(p.name || '') + ': ' + starsText(p.stars) + '</div>').join('');
+  return '<div style="margin-top:8px;padding:8px 10px;background:var(--surface2);border-radius:8px;">' +
+    '<div style="font-size:.8rem;"><strong>Customer rating for you:</strong> ' + starsText(o.boyRating) + '</div>' + prods + '</div>';
+}
+
+// One delivery. A new offer shows only the patient name and the medicines, with Accept and Reject.
+// The address and the route appear after he accepts.
+function deliveryOrderCardHtml(id, o) {
+  const items = (o.medicines || []).map(m => m.name || m.medicineName).filter(Boolean).join(', ');
+  const head = '<strong>' + escHtmlSafe(o.patientName || 'Patient') + '</strong>' +
+    '<div style="font-size:.8rem;color:var(--text2);margin-top:4px;">' + escHtmlSafe(items || 'Medicines') + ' · ₹ ' + (Number(o.total) || 0) + '</div>';
+  if (o.deliveryOfferStatus === 'offered') {
+    return '<div style="padding:14px 0;border-bottom:1px solid var(--border);">' + head +
+      '<div style="font-size:.82rem;margin-top:8px;color:var(--orange);">New delivery offer. The customer\'s address and location appear here after you accept.</div>' +
+      '<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;">' +
+      '<button class="btn btn-primary btn-sm" style="width:auto;" onclick="acceptDeliveryOffer(\'' + id + '\')">✅ Accept</button>' +
+      '<button class="btn btn-secondary btn-sm" style="width:auto;" onclick="rejectDeliveryOffer(\'' + id + '\')">❌ Reject</button></div></div>';
+  }
+  const delivered = o.deliveryStatus === 'delivered' || o.status === 'fulfilled';
+  return '<div style="padding:14px 0;border-bottom:1px solid var(--border);">' + head +
+    '<div style="font-size:.85rem;color:var(--text2);margin-top:6px;">' + escHtmlSafe(o.deliveryAddress || 'Address not given') + '</div>' +
+    '<div style="font-size:.8rem;margin-top:4px;">Status: ' + escHtmlSafe(o.status || '') + (o.deliveryKm ? ' · ' + o.deliveryKm + ' km' : '') + '</div>' +
+    (!delivered && o.deliveryLat && o.deliveryLng ? '<div id="route_' + id + '" style="margin-top:8px;"><button class="btn btn-secondary btn-sm" style="width:auto;" onclick="showRouteFromMyLocation(\'' + id + '\',' + o.deliveryLat + ',' + o.deliveryLng + ')">📍 Route from my location</button></div>' : '') +
+    deliveryRatingsHtml(o) + '</div>';
+}
+
+// He accepts an offer: the address and the route are shown from now on
+async function acceptDeliveryOffer(orderId) {
+  try {
+    await db.collection('hospitals/' + currentHospitalId + '/pharmacyOrders').doc(orderId).update({
+      deliveryOfferStatus: 'accepted', offerAcceptedAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+    showToast('Accepted. The address is shown now.', 'success');
+    renderDeliveryHome();
+  } catch (e) { showToast('Could not accept: ' + e.message, 'error'); }
+}
+
+// He rejects an offer: the order goes back to the pharmacy, unassigned, to give to another boy
+async function rejectDeliveryOffer(orderId) {
+  if (!confirm('Reject this delivery? It goes back to the pharmacy to give to another delivery boy.')) return;
+  try {
+    await db.collection('hospitals/' + currentHospitalId + '/pharmacyOrders').doc(orderId).update({
+      deliveryOfferStatus: 'rejected', assignedTo: null, assignedToName: null,
+      deliveryPersonId: null, deliveryPersonName: null, deliveryPersonPhone: null
+    });
+    showToast('Rejected. The pharmacy has been told.', 'success');
+    renderDeliveryHome();
+  } catch (e) { showToast('Could not reject: ' + e.message, 'error'); }
+}
+
 async function renderDeliveryHome() {
   const mc = document.getElementById('mainContent');
   mc.innerHTML = '<div class="page-header"><h2>Hello, ' + escHtmlSafe(currentUser.name || 'there') + '</h2><p>Your deliveries and wallet.</p></div>' +
     '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;">' +
     '<div onclick="navigateTo(\'deliveryWallet\')" style="cursor:pointer;padding:14px 18px;border-radius:14px;background:var(--surface2);border:1px solid var(--accent);min-width:180px;">' +
     '<div style="font-size:.78rem;color:var(--text2);">💰 Wallet (tap to see history)</div>' +
-    '<div id="walletChip" style="font-size:1.4rem;font-weight:800;margin-top:4px;">₹ …</div></div></div>' +
+    '<div id="walletChip" style="font-size:1.4rem;font-weight:800;margin-top:4px;">₹ …</div></div>' +
+    '<div style="padding:14px 18px;border-radius:14px;background:var(--surface2);border:1px solid var(--accent);min-width:180px;">' +
+    '<div style="font-size:.78rem;color:var(--text2);">⭐ My rating from customers</div>' +
+    '<div id="ratingChip" style="font-size:1.4rem;font-weight:800;margin-top:4px;">…</div></div></div>' +
+    '<div id="deliveryBanner"></div>' +
     '<div class="table-container" style="padding:20px;max-width:720px;"><div class="section-title">My deliveries</div><div id="myDeliveries"><div class="empty-state"><p>Loading…</p></div></div></div>';
   try {
     const entries = await loadDeliveryWalletEntries();
@@ -19601,27 +19727,23 @@ async function renderDeliveryHome() {
     if (chip) chip.textContent = '₹ ' + (Math.round(bal * 100) / 100);
   } catch (e) { /* the wallet chip stays blank */ }
   try {
-    // orders assigned from the Medical Store (deliveryPersonId) and from the Delivery Boys page (assignedTo)
-    const ordersRef = db.collection('hospitals/' + currentHospitalId + '/pharmacyOrders');
-    const [byStore, byAdmin] = await Promise.all([
-      ordersRef.where('deliveryPersonId', '==', currentUser.uid).get().catch(() => ({ docs: [] })),
-      ordersRef.where('assignedTo', '==', currentUser.uid).get().catch(() => ({ docs: [] }))
-    ]);
-    const seen = new Set();
-    const snap = { docs: [...byStore.docs, ...byAdmin.docs].filter(d => seen.has(d.id) ? false : (seen.add(d.id), true)), empty: false };
-    snap.empty = snap.docs.length === 0;
-    const el = document.getElementById('myDeliveries');
-    if (snap.empty) { el.innerHTML = '<div class="empty-state"><p>No deliveries assigned to you yet.</p></div>'; return; }
-    el.innerHTML = snap.docs.map(d => {
-      const o = d.data();
-      const map = (o.deliveryLat && o.deliveryLng) ? ('https://www.google.com/maps/dir/?api=1&destination=' + o.deliveryLat + ',' + o.deliveryLng) : '';
-      return '<div style="padding:14px 0;border-bottom:1px solid var(--border);">' +
-        '<strong>' + escHtmlSafe(o.patientName || 'Patient') + '</strong>' +
-        '<div style="font-size:.85rem;color:var(--text2);margin-top:4px;">' + escHtmlSafe(o.deliveryAddress || 'Address not given') + '</div>' +
-        '<div style="font-size:.8rem;margin-top:4px;">Status: ' + escHtmlSafe(o.status || '') + (o.deliveryKm ? ' · ' + o.deliveryKm + ' km' : '') + '</div>' +
-        (o.deliveryLat && o.deliveryLng ? '<div id="route_' + d.id + '" style="margin-top:8px;"><button class="btn btn-secondary btn-sm" style="width:auto;" onclick="showRouteFromMyLocation(\'' + d.id + '\',' + o.deliveryLat + ',' + o.deliveryLng + ')">📍 Route from my location</button></div>' : '') +
+    const [docs, notes] = await Promise.all([loadDeliveryMyOrders(), loadDeliveryNotes()]);
+    const offers = docs.filter(d => d.data().deliveryOfferStatus === 'offered').length;
+    const latest = notes[0];
+    const ban = document.getElementById('deliveryBanner');
+    if (ban && (offers || latest)) {
+      ban.innerHTML = '<div style="margin-bottom:16px;padding:14px 16px;border-radius:12px;background:var(--surface2);border-left:4px solid var(--accent);">' +
+        (offers ? '<div><strong>🔔 You have ' + offers + ' new delivery offer' + (offers > 1 ? 's' : '') + '.</strong> Accept or reject below.</div>' : '') +
+        (latest ? '<div style="margin-top:' + (offers ? 6 : 0) + 'px;font-size:.88rem;"><strong>' + escHtmlSafe(latest.title || 'Message') + '</strong> ' + escHtmlSafe(latest.description || '') + '</div>' : '') +
         '</div>';
-    }).join('');
+    }
+    const rated = docs.map(d => d.data()).filter(o => typeof o.boyRating === 'number');
+    const avg = rated.length ? rated.reduce((s, o) => s + o.boyRating, 0) / rated.length : 0;
+    const rc = document.getElementById('ratingChip');
+    if (rc) rc.textContent = rated.length ? avg.toFixed(1) + ' / 5 · ' + rated.length + ' rating' + (rated.length > 1 ? 's' : '') : 'No ratings yet';
+    const el = document.getElementById('myDeliveries');
+    if (!docs.length) { el.innerHTML = '<div class="empty-state"><p>No deliveries assigned to you yet.</p></div>'; return; }
+    el.innerHTML = docs.map(d => deliveryOrderCardHtml(d.id, d.data())).join('');
   } catch (e) { showToast('Could not load: ' + e.message, 'error'); }
 }
 

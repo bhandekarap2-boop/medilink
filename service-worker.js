@@ -3,7 +3,7 @@
 // before they'll offer "Install app" / package an APK). Keeps a small app-shell cache
 // so the login screen can still open when briefly offline; never touches Firebase or
 // any cross-origin request — those go straight to the network untouched.
-const CACHE_NAME = 'mediflow-shell-v2';
+const CACHE_NAME = 'mediflow-shell-v3';
 const SHELL_FILES = ['/', '/index.html', '/icon-192.png', '/icon-512.png', '/mediflow-logo.png'];
 
 self.addEventListener('install', event => {
