@@ -19683,7 +19683,7 @@ function deliveryOrderCardHtml(id, o) {
   return '<div style="padding:14px 0;border-bottom:1px solid var(--border);">' + head +
     '<div style="font-size:.85rem;color:var(--text2);margin-top:6px;">' + escHtmlSafe(o.deliveryAddress || 'Address not given') + '</div>' +
     '<div style="font-size:.8rem;margin-top:4px;">Status: ' + escHtmlSafe(o.status || '') + (o.deliveryKm ? ' · ' + o.deliveryKm + ' km' : '') + '</div>' +
-    (!delivered && o.deliveryLat && o.deliveryLng ? '<div id="route_' + id + '" style="margin-top:8px;"><button class="btn btn-secondary btn-sm" style="width:auto;" onclick="showRouteFromMyLocation(\'' + id + '\',' + o.deliveryLat + ',' + o.deliveryLng + ')">📍 Route from my location</button></div>' : '') +
+    (o.deliveryLat && o.deliveryLng ? '<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;"><a href="https://www.google.com/maps/search/?api=1&query=' + o.deliveryLat + ',' + o.deliveryLng + '" class="btn btn-secondary btn-sm" style="text-decoration:none;">📍 Show location</a><a href="https://www.google.com/maps/dir/?api=1&destination=' + o.deliveryLat + ',' + o.deliveryLng + '&travelmode=driving" class="btn btn-primary btn-sm" style="text-decoration:none;">🧭 Start route</a></div>' : (o.deliveryAddress ? '<div style="margin-top:8px;"><a href="https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(o.deliveryAddress) + '" class="btn btn-secondary btn-sm" style="text-decoration:none;">📍 Show location</a></div>' : '')) +
     deliveryRatingsHtml(o) + '</div>';
 }
 
@@ -19748,20 +19748,6 @@ async function renderDeliveryHome() {
     if (!docs.length) { el.innerHTML = '<div class="empty-state"><p>No deliveries assigned to you yet.</p></div>'; return; }
     el.innerHTML = docs.map(d => deliveryOrderCardHtml(d.id, d.data())).join('');
   } catch (e) { showToast('Could not load: ' + e.message, 'error'); }
-}
-
-// Opens the route from the delivery boy's own location to the customer, in Google Maps
-function showRouteFromMyLocation(orderId, dLat, dLng) {
-  const box = document.getElementById('route_' + orderId);
-  if (!box) return;
-  if (!navigator.geolocation) { showToast('This phone cannot read its location', 'error'); return; }
-  box.innerHTML = '<span style="font-size:.82rem;color:var(--text2);">Finding your location…</span>';
-  navigator.geolocation.getCurrentPosition(pos => {
-    const url = 'https://www.google.com/maps/dir/?api=1&origin=' + pos.coords.latitude + ',' + pos.coords.longitude + '&destination=' + dLat + ',' + dLng + '&travelmode=driving';
-    box.innerHTML = '<a href="' + url + '" target="_blank" rel="noopener" class="btn btn-primary btn-sm" style="text-decoration:none;display:inline-block;">Open the route in Google Maps</a>';
-  }, err => {
-    box.innerHTML = '<span style="font-size:.82rem;color:var(--orange);">Could not read your location. Turn on location for the browser, then try again.</span>';
-  }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
 }
 
 // The wallet: the balance, and every money movement with its date and the balance after it
