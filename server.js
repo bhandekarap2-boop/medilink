@@ -3175,6 +3175,95 @@ app.get('/mediflow.apk', (req, res) => res.sendFile(path.join(__dirname, 'medifl
   if (err) res.status(404).send('APK not built yet');
 }));
 
+// ============ DELIVERY: AUTOMATIC ASSIGNMENT (works with no admin logged in) ============
+// The app calls this when an order is placed, when a boy switches on, rejects an order, or opens his
+// dashboard. It gives every waiting delivery order to the best boy on duty today. The rules match the
+// admin page in index.html: test username first, then highest rating, fewest active deliveries, fewest hours.
+const DELIVERY_TEST_USERNAME_SERVER = 'rohan';
+function istDateKey(d) {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+}
+function pickBoyServer(pool, stats) {
+  const test = pool.find(b => b.username === DELIVERY_TEST_USERNAME_SERVER);
+  if (test) return test;
+  const rating = b => (stats[b.id] && stats[b.id].count ? stats[b.id].sum / stats[b.id].count : 3.5);
+  const active = b => (stats[b.id] ? stats[b.id].active : 0);
+  return pool.slice().sort((a, b) => (rating(b) - rating(a)) || (active(a) - active(b)) || (a.minutes - b.minutes))[0];
+}
+async function autoAssignDeliveryOrders(db, hospitalId) {
+  const hRef = db.collection('hospitals').doc(hospitalId);
+  const hospSnap = await hRef.get();
+  if (!hospSnap.exists) return 0;
+  const hosp = hospSnap.data();
+  const today = istDateKey(new Date());
+  const orders = (await hRef.collection('pharmacyOrders').where('fulfillment', '==', 'delivery').get()).docs;
+  const waiting = orders.filter(d => d.data().status === 'pending' && !d.data().assignedTo);
+  if (!waiting.length) return 0;
+  const stats = {};
+  orders.forEach(d => {
+    const o = d.data();
+    [o.assignedTo, o.deliveryPersonId].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i).forEach(id => {
+      const s = stats[id] || (stats[id] = { sum: 0, count: 0, active: 0 });
+      if (typeof o.boyRating === 'number') { s.sum += o.boyRating; s.count++; }
+      if (o.status !== 'fulfilled' && o.status !== 'cancelled' && o.deliveryStatus !== 'delivered' && (o.assignedTo === id || o.deliveryPersonId === id)) s.active++;
+    });
+  });
+  const pool = [];
+  for (const b of (await hRef.collection('deliveryBoys').get()).docs) {
+    const data = b.data();
+    if (data.active === false || data.onDuty !== true || data.onDutyDate !== today) continue;
+    const sessions = await b.ref.collection('dutySessions').where('date', '==', today).get();
+    let minutes = sessions.docs.reduce((s, d) => s + (Number(d.data().minutes) || 0), 0);
+    if (data.onDutySince && data.onDutySince.toDate) minutes += Math.max(0, Math.round((Date.now() - data.onDutySince.toDate().getTime()) / 60000));
+    pool.push({ id: b.id, ...data, minutes });
+  }
+  if (!pool.length) return 0;
+  let count = 0;
+  for (const od of waiting) {
+    const o = od.data();
+    const open = pool.filter(b => !(o.rejectedBy || []).includes(b.id));
+    if (!open.length) continue;
+    const pick = pickBoyServer(open, stats);
+    const claimed = await db.runTransaction(async tx => {
+      const fresh = await tx.get(od.ref);
+      if (!fresh.exists || fresh.data().assignedTo) return false;
+      tx.update(od.ref, { assignedTo: pick.id, assignedToName: pick.username, assignedAt: admin.firestore.FieldValue.serverTimestamp(), deliveryOfferStatus: 'offered' });
+      return true;
+    });
+    if (!claimed) continue;
+    stats[pick.id] = stats[pick.id] || { sum: 0, count: 0, active: 0 };
+    stats[pick.id].active++;
+    count++;
+    await hRef.collection('notifications').add({
+      title: 'New delivery offer', description: 'Open My Deliveries to accept or reject it.', link: '', target: 'delivery:' + pick.username,
+      sentBy: 'MediFlow', createdAt: admin.firestore.FieldValue.serverTimestamp(), date: today
+    });
+    const digits = String(pick.phone || '').replace(/\D/g, '');
+    if (digits.length >= 10) {
+      const to = digits.length === 10 ? '91' + digits : digits;
+      try {
+        await sendWhatsAppSmart(db, hospitalId, hosp, to,
+          '📦 New delivery offer (order ' + (o.orderNumber || '') + '). Open the MediFlow app, My Deliveries, and accept or reject it. The customer address is shown after you accept.',
+          hosp.whatsappPhoneNumberId, { name: 'mf_order_update', params: [pick.name || pick.username, o.orderNumber || 'your order', hosp.name || 'MediFlow', 'New delivery offer: open My Deliveries to accept or reject'] });
+      } catch (e) { console.warn('delivery offer WhatsApp failed:', e.message); }
+    }
+  }
+  return count;
+}
+app.post('/api/delivery/auto-assign', async (req, res) => {
+  try {
+    const db = getAdminDb();
+    if (!db) return res.status(503).json({ error: 'Not configured yet.' });
+    const hospitalId = String((req.body || {}).hospitalId || '');
+    if (!/^[A-Za-z0-9_-]{1,80}$/.test(hospitalId)) return res.status(400).json({ error: 'Missing hospitalId.' });
+    const assigned = await autoAssignDeliveryOrders(db, hospitalId);
+    res.json({ ok: true, assigned });
+  } catch (e) {
+    console.error('delivery auto-assign error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Alexa skill (voice booking) — endpoint, account linking and token exchange.
 require('./alexa')(app, { getAdminDb, admin, execWaTool, express });
 const { renderLegalPage } = require('./legal');

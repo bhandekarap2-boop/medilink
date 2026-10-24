@@ -5962,6 +5962,7 @@ async function submitPatMedOrder() {
       createdAt: firebase.firestore.FieldValue.serverTimestamp()
     });
     await savePatAddressIfAsked(delAddr);
+    requestDeliveryAutoAssign();
     _patMedCart = [];
     _patMedLoc = null;
     renderPatMedCart();
@@ -13378,6 +13379,7 @@ async function renderAdminPharmacy() {
       <div class="table-container" style="padding:20px;">
         <div class="section-title">➕ Add / Restock Medicine</div>
         <div class="form-group"><label>Medicine Name</label><input id="medName" placeholder="e.g. Paracetamol 500mg"/></div>
+        <div class="form-group"><label>Barcode on the packet (optional)</label><input id="medBarcode" placeholder="e.g. 8901234567890"/></div>
         <div class="two-col">
           <div class="form-group"><label>Category</label><input id="medCategory" placeholder="e.g. Tablet, Syrup"/></div>
           <div class="form-group"><label>Unit</label><input id="medUnit" placeholder="e.g. strip, bottle, pcs" value="strip"/></div>
@@ -13823,6 +13825,16 @@ async function resendDeliveryCode(orderId) {
     showToast(sent ? '✅ Code sent again on WhatsApp' : '❌ WhatsApp could not deliver the message — you can read the code out from the patient\'s app instead', sent ? 'success' : 'error');
   } catch(e) { showToast('❌ ' + e.message, 'error'); }
 }
+// One wallet entry per delivered order: the delivery fee, credited to the boy who delivered it
+async function creditDeliveryWallet(orderId, o) {
+  const boyId = o.assignedTo || o.deliveryPersonId;
+  const fee = Number(o.deliveryCharge) || 0;
+  if (!boyId || fee <= 0) return;
+  await db.collection('hospitals/' + currentHospitalId + '/deliveryBoys/' + boyId + '/wallet').doc('order_' + orderId).set({
+    type: 'credit', amount: fee, reason: 'Delivery ' + (o.orderNumber || ''), orderId: orderId,
+    createdAt: firebase.firestore.FieldValue.serverTimestamp()
+  });
+}
 async function promptDeliveryCode(orderId) {
   const code = prompt('Enter the 4-digit delivery code the patient gave you:');
   if (code === null) return;
@@ -13832,6 +13844,7 @@ async function promptDeliveryCode(orderId) {
     const o = snap.data();
     if (String(code).trim() !== String(o.deliveryCode || '')) { showToast('❌ Code does not match', 'error'); return; }
     await snap.ref.update({ deliveryStatus: 'delivered', status: 'fulfilled', fulfilledAt: firebase.firestore.FieldValue.serverTimestamp() });
+    await creditDeliveryWallet(orderId, o);
     showToast('✅ Delivery confirmed!', 'success');
     loadPatientMedOrders(); renderDeliveryLookupResult();
   } catch(e) { showToast('❌ ' + e.message, 'error'); }
@@ -14590,6 +14603,7 @@ async function saveMedicine() {
   const stock = parseInt(document.getElementById('medStock').value) || 0;
   const lowStockThreshold = parseInt(document.getElementById('medLowStock').value) || 10;
   const expiryDate = (document.getElementById('medExpiry') || {}).value || '';
+  const barcode = ((document.getElementById('medBarcode') || {}).value || '').trim();
   if (!name) { showToast('Enter medicine name', 'error'); return; }
   if (sellPrice < costPrice) { showToast('⚠️ Sell price is lower than cost price — you\'ll lose money on this item', 'error'); }
   try {
@@ -14604,12 +14618,13 @@ async function saveMedicine() {
         category: category || existing.category,
         unit: unit || existing.unit,
         lowStockThreshold,
+        barcode: barcode || existing.barcode || '',
         ...(expiryDate ? { expiryDate } : {})
       });
       showToast('✅ Restocked ' + name + ' (+' + stock + ' ' + unit + ')', 'success');
     } else {
       await db.collection('hospitals/' + currentHospitalId + '/medicines').add({
-        name, category, unit, costPrice, sellPrice, stock, lowStockThreshold, ...(expiryDate ? { expiryDate } : {}),
+        name, category, unit, costPrice, sellPrice, stock, lowStockThreshold, barcode, ...(expiryDate ? { expiryDate } : {}),
         createdAt: firebase.firestore.FieldValue.serverTimestamp()
       });
       showToast('✅ Medicine added', 'success');
@@ -14938,8 +14953,11 @@ async function printMedOrderTicket(orderId, mode) {
       return;
     }
 
+    const stockSnap = await db.collection('hospitals/' + currentHospitalId + '/medicines').get().catch(() => ({ docs: [] }));
+    const barcodeOf = {};
+    stockSnap.docs.forEach(d => { const s = d.data(); if (s.barcode) barcodeOf[s.name] = s.barcode; });
     const itemsHtml = medList.map(m =>
-      '<tr><td style="padding:8px 0;border-bottom:1px solid #eee;">' + m.name + '</td><td style="text-align:right;padding:8px 0;border-bottom:1px solid #eee;">' + m.qty + ' × ₹' + m.sellPrice + '</td><td style="text-align:right;padding:8px 0;border-bottom:1px solid #eee;font-weight:500;">₹' + m.subtotal + '</td></tr>'
+      '<tr><td style="padding:8px 0;border-bottom:1px solid #eee;">' + m.name + (barcodeOf[m.name] ? '<div style="font-family:monospace;font-size:11px;color:#555;">Barcode ' + barcodeOf[m.name] + '</div>' : '') + '</td><td style="text-align:right;padding:8px 0;border-bottom:1px solid #eee;">' + m.qty + ' × ₹' + m.sellPrice + '</td><td style="text-align:right;padding:8px 0;border-bottom:1px solid #eee;font-weight:500;">₹' + m.subtotal + '</td></tr>'
     ).join('');
     const title = mode === 'bill' ? 'Medical Store Bill' : 'Order Receipt';
     const html = `<!DOCTYPE html><html><head><title>${title} - ${orderNumber}</title>
@@ -19754,6 +19772,7 @@ async function toggleMyDuty() {
     } else {
       await ref.update({ onDuty: true, onDutyDate: todayStr(), onDutySince: firebase.firestore.FieldValue.serverTimestamp() });
       showToast('You are on duty. New deliveries will come to you.', 'success');
+      requestDeliveryAutoAssign();
     }
     renderDeliveryHome();
   } catch (e) { showToast('Could not change duty: ' + e.message, 'error'); }
@@ -19827,6 +19846,7 @@ async function rejectDeliveryOffer(orderId) {
       rejectedBy: firebase.firestore.FieldValue.arrayUnion(currentUser.uid)
     });
     showToast('Rejected.', 'success');
+    requestDeliveryAutoAssign();
   } catch (e) { showToast('Could not reject: ' + e.message, 'error'); }
 }
 
@@ -19860,6 +19880,7 @@ async function renderDeliveryHome() {
     }
   } catch (e) { /* no banner */ }
   startMyOrdersListeners();
+  requestDeliveryAutoAssign();
 }
 
 // One delivery. A new offer shows the patient name, the medicines and the fee only.
@@ -20002,8 +20023,12 @@ async function addBoyScan(code) {
   const done = o[boyScanField()] || [];
   if (done.length >= names.length) { setBoyScanMsg('All products are already scanned.'); return; }
   if (done.some(d => d.code === code)) { setBoyScanMsg('This barcode is already scanned for another product.'); return; }
+  const stockSnap = await db.collection('hospitals/' + currentHospitalId + '/medicines').where('name', '==', names[done.length]).limit(1).get();
+  const stock = stockSnap.empty ? {} : stockSnap.docs[0].data();
+  if (stock.barcode && String(stock.barcode).trim() !== code) { setBoyScanMsg('❌ Wrong product. This barcode is not ' + names[done.length] + '. Check the packet and scan again.'); return; }
+  const note = stock.barcode ? '' : ' (no barcode saved for this product in stock)';
   await ref.update({ [boyScanField()]: firebase.firestore.FieldValue.arrayUnion({ name: names[done.length], code: code, at: new Date().toISOString() }) });
-  showToast('✅ ' + names[done.length] + ' scanned', 'success');
+  showToast('✅ ' + names[done.length] + ' scanned' + note, 'success');
   await renderBoyScan();
 }
 
@@ -20015,7 +20040,7 @@ async function submitBoyScanCode() {
 
 // Camera: reads one barcode at a time. Stops after each read, so the same barcode is not read twice.
 async function startBoyCamera() {
-  if (!('BarcodeDetector' in window)) { setBoyScanMsg('This phone cannot read barcodes with the camera. Type the barcode number instead.'); return; }
+  if (!('BarcodeDetector' in window) && !(await loadZxing())) { setBoyScanMsg('This phone cannot read barcodes with the camera. Type the barcode number instead.'); return; }
   try {
     _boyScan.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
   } catch (e) { setBoyScanMsg('Could not open the camera: ' + e.message); return; }
@@ -20023,7 +20048,29 @@ async function startBoyCamera() {
   await renderBoyScan();
 }
 
+function loadZxing() {
+  if (window.ZXing) return Promise.resolve(true);
+  return new Promise(resolve => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js';
+    s.onload = () => resolve(!!window.ZXing);
+    s.onerror = () => resolve(false);
+    document.head.appendChild(s);
+  });
+}
+let _zxingReader = null;
+function attachZxingReader(video) {
+  if (_zxingReader) { try { _zxingReader.reset(); } catch (e) {} }
+  _zxingReader = new ZXing.BrowserMultiFormatReader();
+  _zxingReader.decodeFromVideoElement(video, result => {
+    if (!result || !_boyScan.stream) return;
+    const code = result.getText().trim();
+    stopBoyCamera();
+    addBoyScan(code).catch(e => setBoyScanMsg('Could not save: ' + e.message));
+  });
+}
 function attachBarcodeReader(video) {
+  if (!('BarcodeDetector' in window)) { attachZxingReader(video); return; }
   let detector;
   try { detector = new BarcodeDetector({ formats: ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128', 'code_39', 'qr_code'] }); }
   catch (e) { setBoyScanMsg('Camera reading is not supported here. Type the barcode number instead.'); return; }
@@ -20045,6 +20092,7 @@ function attachBarcodeReader(video) {
 }
 
 function stopBoyCamera() {
+  if (_zxingReader) { try { _zxingReader.reset(); } catch (e) {} _zxingReader = null; }
   if (_boyScan.timer) { clearTimeout(_boyScan.timer); _boyScan.timer = null; }
   if (_boyScan.stream) { _boyScan.stream.getTracks().forEach(t => t.stop()); _boyScan.stream = null; }
   _boyScan.camera = false;
@@ -20055,6 +20103,12 @@ function closeBoyScan() {
   const ov = document.getElementById('boyScanOverlay');
   if (ov) ov.style.display = 'none';
   _boyScan.orderId = null;
+}
+
+// Asks the server to give waiting delivery orders to boys on duty. Safe to call often: it only touches unassigned orders.
+function requestDeliveryAutoAssign() {
+  if (!currentHospitalId) return;
+  fetch('/api/delivery/auto-assign', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ hospitalId: currentHospitalId }) }).catch(() => {});
 }
 
 // The wallet: the balance, and every money movement with its date and the balance after it
