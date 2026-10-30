@@ -20244,7 +20244,7 @@ async function renderOfficeConsole(hospitalOnly) {
   mc.innerHTML = '<div class="page-header"><h2>🗂️ ' + (hospitalOnly ? 'Users &amp; Activity' : 'Office Console') + '</h2>' +
     '<p>' + (hospitalOnly ? 'Your hospital\'s users, activity and blocking.' : 'Every hospital, user and activity on MediFlow. Block users or export CSV.') + '</p></div>' +
     '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;">' +
-    ['users', 'activity', 'suspicious', 'patient', 'export'].map(t => '<button class="btn btn-secondary btn-sm" style="width:auto;" onclick="consoleTab(\'' + t + '\')">' + ({ users: '👥 Users', activity: '📜 Activity', suspicious: '🚨 Suspicious', patient: '🧑 Patient record', export: '⬇️ Export center' })[t] + '</button>').join('') +
+    ['users', 'activity', 'suspicious', 'patient', 'manage', 'export'].map(t => '<button class="btn btn-secondary btn-sm" style="width:auto;" onclick="consoleTab(\'' + t + '\')">' + ({ users: '👥 Users', activity: '📜 Activity', suspicious: '🚨 Suspicious', patient: '🧑 Patient record', manage: '🛠️ Manage records', export: '⬇️ Export center' })[t] + '</button>').join('') +
     '<button class="btn btn-secondary btn-sm" style="width:auto;" onclick="renderOfficeConsole(' + (hospitalOnly ? 'true' : 'false') + ')">🔄 Refresh</button></div>' +
     '<div id="consoleBody"><div class="empty-state"><p>Loading…</p></div></div>';
   try {
@@ -20264,6 +20264,7 @@ function consoleRender() {
   if (_console.tab === 'activity') return consoleRenderActivity(el);
   if (_console.tab === 'suspicious') return consoleRenderSuspicious(el);
   if (_console.tab === 'patient') return consoleRenderPatient(el);
+  if (_console.tab === 'manage') return consoleRenderManage(el);
   consoleRenderExport(el);
 }
 
@@ -20526,6 +20527,144 @@ async function consoleExportSection(i) {
     const name = 'mediflow-' + (x.kind + (x.method && x.method !== 'all' ? '-' + x.method : '')) + '.csv';
     consoleDownloadCsv(name, rows, headers);
   } catch (e) { showToast('Export failed: ' + e.message, 'error'); }
+}
+
+// ============ OFFICE CONSOLE: MANAGE RECORDS (EDIT, DELETE, MARK PAID) ============
+// Every change is written to the activity log with the hospital it belongs to.
+const CONSOLE_SECTIONS = {
+  employees: { coll: 'staff', label: '👔 Employees', cols: ['name', 'role', 'phone', 'email'], fields: [
+    { k: 'name', l: 'Name' }, { k: 'role', l: 'Role' }, { k: 'phone', l: 'Phone' }, { k: 'email', l: 'Email' } ] },
+  deliveryboys: { coll: 'deliveryBoys', label: '🛵 Delivery boys', cols: ['name', 'username', 'phone'], fields: [
+    { k: 'name', l: 'Name' }, { k: 'phone', l: 'WhatsApp number' }, { k: 'email', l: 'Email' } ] },
+  stock: { coll: 'medicines', label: '📦 Medicine stock', cols: ['name', 'stock', 'sellPrice'], fields: [
+    { k: 'name', l: 'Medicine' }, { k: 'category', l: 'Category' }, { k: 'stock', l: 'Stock', num: true }, { k: 'costPrice', l: 'Cost price', num: true },
+    { k: 'sellPrice', l: 'Sell price', num: true }, { k: 'lowStockThreshold', l: 'Low-stock alert at', num: true }, { k: 'barcode', l: 'Barcode' }, { k: 'expiryDate', l: 'Expiry date' } ] },
+  bills: { coll: 'bills', label: '🧾 Bills', cols: ['patientName', 'total', 'paid'], fields: [
+    { k: 'patientName', l: 'Patient' }, { k: 'purpose', l: 'Purpose' }, { k: 'total', l: 'Amount (₹)', num: true },
+    { k: 'paymentMethod', l: 'Payment method', select: ['cash', 'upi', 'card', 'healthCard', 'insurance'] } ] },
+  orders: { coll: 'pharmacyOrders', label: '🛒 Medicine orders', cols: ['patientName', 'total', 'status'], fields: [
+    { k: 'patientName', l: 'Patient' }, { k: 'total', l: 'Total (₹)', num: true },
+    { k: 'status', l: 'Status', select: ['pending', 'accepted', 'fulfilled', 'cancelled'] } ] }
+};
+let _manage = { section: 'employees', rows: [], editing: null };
+
+async function consoleLoadSection(key) {
+  const sec = CONSOLE_SECTIONS[key];
+  const rows = [];
+  for (const hid of Object.keys(_console.hospitals)) {
+    const snap = await db.collection('hospitals/' + hid + '/' + sec.coll).limit(1000).get().catch(() => ({ docs: [] }));
+    snap.docs.forEach(d => rows.push({ id: d.id, hid: hid, hname: _console.hospitals[hid], data: d.data() }));
+  }
+  return rows;
+}
+
+function consoleRenderManage(el) {
+  const tabs = Object.keys(CONSOLE_SECTIONS).map(k => '<button class="btn ' + (_manage.section === k ? 'btn-primary' : 'btn-secondary') + ' btn-sm" style="width:auto;" onclick="consoleManageSection(\'' + k + '\')">' + CONSOLE_SECTIONS[k].label + '</button>').join('');
+  el.innerHTML = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">' + tabs + '</div>' +
+    '<div id="manageEdit"></div><div id="manageList"><div class="empty-state"><p>Loading…</p></div></div>';
+  consoleManageLoad();
+}
+
+function consoleManageSection(k) { _manage.section = k; _manage.editing = null; consoleRender(); }
+
+async function consoleManageLoad() {
+  const sec = CONSOLE_SECTIONS[_manage.section];
+  const el = document.getElementById('manageList');
+  if (!el) return;
+  try {
+    _manage.rows = await consoleLoadSection(_manage.section);
+    const rows = _manage.rows.map((r, i) => '<tr style="border-bottom:1px solid var(--border);">' +
+      (_console.hospitalOnly ? '' : '<td style="padding:8px;font-size:.8rem;">' + escHtmlSafe(r.hname) + '</td>') +
+      sec.cols.map(c => '<td style="padding:8px;">' + escHtmlSafe(c === 'paid' ? (r.data.paid ? 'Paid' : 'Unpaid') : String(r.data[c] == null ? '' : r.data[c])) + '</td>').join('') +
+      '<td style="padding:8px;white-space:nowrap;">' +
+      '<button class="btn btn-secondary btn-sm" style="width:auto;" onclick="consoleManageEdit(' + i + ')">Edit</button> ' +
+      (_manage.section === 'bills' ? '<button class="btn btn-secondary btn-sm" style="width:auto;" onclick="consoleManageTogglePaid(' + i + ')">' + (r.data.paid ? 'Mark unpaid' : 'Mark paid') + '</button> ' : '') +
+      '<button class="btn btn-danger btn-sm" style="width:auto;" onclick="consoleManageDelete(' + i + ')">Delete</button></td></tr>').join('');
+    el.innerHTML = '<div class="table-container" style="padding:12px;overflow-x:auto;">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;"><strong>' + sec.label + '</strong>' +
+      '<button class="btn btn-secondary btn-sm" style="width:auto;" onclick="consoleManageCsv()">⬇️ Export this list (CSV)</button></div>' +
+      (rows ? '<table style="width:100%;border-collapse:collapse;font-size:.85rem;"><thead><tr style="text-align:left;color:var(--text2);">' +
+        (_console.hospitalOnly ? '' : '<th style="padding:8px;">Hospital</th>') + sec.cols.map(c => '<th style="padding:8px;">' + c + '</th>').join('') + '<th style="padding:8px;">Actions</th></tr></thead><tbody>' + rows + '</tbody></table>'
+        : '<div class="empty-state"><p>No records yet.</p></div>') + '</div>';
+  } catch (e) { el.innerHTML = '<div class="empty-state"><p>Could not load: ' + escHtmlSafe(e.message) + '</p></div>'; }
+}
+
+function consoleManageEdit(i) {
+  const sec = CONSOLE_SECTIONS[_manage.section];
+  const r = _manage.rows[i];
+  if (!r) return;
+  _manage.editing = i;
+  const box = document.getElementById('manageEdit');
+  box.innerHTML = '<div class="table-container" style="padding:16px;margin-bottom:12px;max-width:640px;">' +
+    '<div class="section-title">Edit · ' + escHtmlSafe(r.hname) + '</div>' +
+    sec.fields.map(f => '<div class="form-group"><label>' + f.l + '</label>' +
+      (f.select ? '<select id="mf_' + f.k + '">' + f.select.map(o => '<option value="' + o + '"' + (String(r.data[f.k] || '') === o ? ' selected' : '') + '>' + o + '</option>').join('') + '</select>'
+        : '<input id="mf_' + f.k + '" value="' + escHtmlSafe(String(r.data[f.k] == null ? '' : r.data[f.k])) + '"/>') + '</div>').join('') +
+    '<div style="display:flex;gap:8px;"><button class="btn btn-primary" style="width:auto;" onclick="consoleManageSave()">Save changes</button>' +
+    '<button class="btn btn-secondary" style="width:auto;" onclick="consoleManageCancel()">Cancel</button></div></div>';
+  box.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function consoleManageCancel() { _manage.editing = null; const b = document.getElementById('manageEdit'); if (b) b.innerHTML = ''; }
+
+async function consoleManageSave() {
+  const sec = CONSOLE_SECTIONS[_manage.section];
+  const r = _manage.rows[_manage.editing];
+  if (!r) return;
+  const data = {};
+  for (const f of sec.fields) {
+    const v = (document.getElementById('mf_' + f.k) || {}).value;
+    if (v === undefined) continue;
+    if (f.num) {
+      const n = Number(v);
+      if (v !== '' && isNaN(n)) { showToast(f.l + ' must be a number', 'error'); return; }
+      data[f.k] = v === '' ? 0 : n;
+    } else data[f.k] = String(v).trim();
+  }
+  try {
+    await db.collection('hospitals/' + r.hid + '/' + sec.coll).doc(r.id).update(data);
+    await logAudit('record_updated', _manage.section + ' ' + (data.name || data.patientName || r.id), r.hid);
+    showToast('✅ Saved', 'success');
+    consoleManageCancel();
+    consoleManageLoad();
+  } catch (e) { showToast('Could not save: ' + e.message, 'error'); }
+}
+
+async function consoleManageDelete(i) {
+  const sec = CONSOLE_SECTIONS[_manage.section];
+  const r = _manage.rows[i];
+  if (!r) return;
+  const name = r.data.name || r.data.patientName || r.id;
+  if (!confirm('Delete "' + name + '" from ' + r.hname + '? This cannot be undone.')) return;
+  try {
+    await db.collection('hospitals/' + r.hid + '/' + sec.coll).doc(r.id).delete();
+    await logAudit('record_deleted', _manage.section + ' ' + name, r.hid);
+    showToast('Deleted', 'success');
+    consoleManageLoad();
+  } catch (e) { showToast('Could not delete: ' + e.message, 'error'); }
+}
+
+async function consoleManageTogglePaid(i) {
+  const r = _manage.rows[i];
+  if (!r) return;
+  const paid = !r.data.paid;
+  try {
+    await db.collection('hospitals/' + r.hid + '/bills').doc(r.id).update(paid
+      ? { paid: true, paidAt: firebase.firestore.FieldValue.serverTimestamp() }
+      : { paid: false, paidAt: firebase.firestore.FieldValue.delete() });
+    await logAudit(paid ? 'bill_marked_paid' : 'bill_marked_unpaid', (r.data.patientName || '') + ' ₹' + (r.data.total || 0), r.hid);
+    consoleManageLoad();
+  } catch (e) { showToast('Could not update: ' + e.message, 'error'); }
+}
+
+function consoleManageCsv() {
+  const sec = CONSOLE_SECTIONS[_manage.section];
+  const rows = _manage.rows.map(r => {
+    const o = { Hospital: r.hname };
+    sec.fields.forEach(f => { o[f.l] = r.data[f.k] == null ? '' : r.data[f.k]; });
+    return o;
+  });
+  consoleDownloadCsv('mediflow-' + _manage.section + '.csv', rows, ['Hospital'].concat(sec.fields.map(f => f.l)));
 }
 
 // Asks the server to give waiting delivery orders to boys on duty. Safe to call often: it only touches unassigned orders.
