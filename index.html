@@ -2811,6 +2811,9 @@ function getDefaultSidebarItems() {
     menus.admin.push({icon:'📚', label:'Platform Records', page:'superRecords'});
     menus.admin.push({icon:'🎬', label:'MediFlow Videos', page:'superVideos'});
   }
+  // Everyone can send feedback, and staff can make a bill step by step
+  Object.values(menus).forEach(list => list.push({icon:'💬', label:'Feedback', page:'feedbackPage'}));
+  if (currentRole === 'admin') menus.admin.push({icon:'🧾', label:'New bill (step by step)', page:'billWizard'});
   // A hospital admin manages the users of his own hospital (block, activity, CSV)
   if (currentRole === 'admin' && !isOwnerSelf()) menus.admin.push({icon:'🗂️', label:'Users & Activity', page:'adminUserControl'});
   // Medical Manager and Medical Staff accounts only ever see the Medical Store — everything
@@ -2898,6 +2901,8 @@ function navigateTo(page) {
     adminPrintHistory: renderAdminPrintHistory,
     adminManageHospitals: renderAdminManageHospitals,
     adminOfficeConsole: () => renderOfficeConsole(false),
+    feedbackPage: renderFeedbackPage,
+    billWizard: renderBillWizard,
     adminUserControl: () => renderOfficeConsole(true),
     adminDevice: renderAdminDevice,
     adminDisplaySetup: renderAdminDisplaySetup,
@@ -20245,7 +20250,7 @@ async function renderOfficeConsole(hospitalOnly) {
   mc.innerHTML = '<div class="page-header"><h2>🗂️ ' + (hospitalOnly ? 'Users &amp; Activity' : 'Office Console') + '</h2>' +
     '<p>' + (hospitalOnly ? 'Your hospital\'s users, activity and blocking.' : 'Every hospital, user and activity on MediFlow. Block users or export CSV.') + '</p></div>' +
     '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;">' +
-    ['users', 'activity', 'suspicious', 'patient', 'manage', 'export'].map(t => '<button class="btn btn-secondary btn-sm" style="width:auto;" onclick="consoleTab(\'' + t + '\')">' + ({ users: '👥 Users', activity: '📜 Activity', suspicious: '🚨 Suspicious', patient: '🧑 Patient record', manage: '🛠️ Manage records', export: '⬇️ Export center' })[t] + '</button>').join('') +
+    ['users', 'activity', 'suspicious', 'patient', 'manage', 'feedback', 'export'].map(t => '<button class="btn btn-secondary btn-sm" style="width:auto;" onclick="consoleTab(\'' + t + '\')">' + ({ users: '👥 Users', activity: '📜 Activity', suspicious: '🚨 Suspicious', patient: '🧑 Patient record', manage: '🛠️ Manage records', feedback: '💬 Feedback approvals', export: '⬇️ Export center' })[t] + '</button>').join('') +
     '<button class="btn btn-secondary btn-sm" style="width:auto;" onclick="renderOfficeConsole(' + (hospitalOnly ? 'true' : 'false') + ')">🔄 Refresh</button></div>' +
     '<div id="consoleBody"><div class="empty-state"><p>Loading…</p></div></div>';
   try {
@@ -20266,6 +20271,7 @@ function consoleRender() {
   if (_console.tab === 'suspicious') return consoleRenderSuspicious(el);
   if (_console.tab === 'patient') return consoleRenderPatient(el);
   if (_console.tab === 'manage') return consoleRenderManage(el);
+  if (_console.tab === 'feedback') return renderFeedbackConsole(el);
   consoleRenderExport(el);
 }
 
@@ -20787,6 +20793,251 @@ function consoleManageCsv() {
     return o;
   });
   consoleDownloadCsv('mediflow-' + _manage.section + '.csv', rows, ['Hospital'].concat(sec.fields.map(f => f.l)));
+}
+
+// ============ FEEDBACK AND FIX REQUESTS (WITH APPROVAL) ============
+// Anyone can send feedback or a bug report. It is approved in one of two ways, set by the owner:
+//   - 'employee_then_owner': an official-team member approves first, then the owner approves
+//   - 'owner_only': only the owner approves
+// Approved items become "ready to fix" and can be copied and sent to the developer.
+let _fb = { settings: { mode: 'employee_then_owner', approverEmails: [] }, items: [], filter: 'open' };
+
+async function loadFeedbackSettings() {
+  const s = await db.collection('platformSettings').doc('feedbackApproval').get().catch(() => null);
+  if (s && s.exists) _fb.settings = Object.assign({ mode: 'employee_then_owner', approverEmails: [] }, s.data());
+}
+
+function fbIsEmployeeApprover() {
+  const me = ((currentUser && currentUser.email) || '').toLowerCase();
+  return !!me && (_fb.settings.approverEmails || []).map(e => String(e).toLowerCase()).includes(me);
+}
+
+// The page every user has: send feedback
+function renderFeedbackPage() {
+  const mc = document.getElementById('mainContent');
+  mc.innerHTML = '<div class="page-header"><h2>💬 Feedback &amp; bug reports</h2><p>Tell the MediFlow team what is wrong or what you need. Every report is checked before it is fixed.</p></div>' +
+    '<div class="table-container" style="padding:20px;max-width:640px;">' +
+    '<div class="form-group"><label>Type</label><select id="fbType"><option>Bug</option><option>Feedback</option><option>Feature request</option></select></div>' +
+    '<div class="form-group"><label>Short title</label><input id="fbTitle" placeholder="e.g. Bill does not print on my phone"/></div>' +
+    '<div class="form-group"><label>What happened, and what should happen?</label><textarea id="fbDesc" rows="5" placeholder="Describe the steps and what you saw"></textarea></div>' +
+    '<button class="btn btn-primary" style="width:auto;" onclick="submitPlatformFeedback()">Send</button></div>';
+}
+
+async function submitPlatformFeedback() {
+  const title = ((document.getElementById('fbTitle') || {}).value || '').trim();
+  const desc = ((document.getElementById('fbDesc') || {}).value || '').trim();
+  if (!title || !desc) { showToast('Add a title and a description', 'error'); return; }
+  try {
+    await db.collection('platformFeedback').add({
+      type: (document.getElementById('fbType') || {}).value || 'Bug', title, description: desc,
+      hospitalId: currentHospitalId || '', sentByName: (currentUser && currentUser.name) || '', sentByRole: currentRole || '',
+      status: 'new', createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+      history: [{ by: (currentUser && (currentUser.name || currentUser.email)) || '', action: 'sent', at: new Date().toISOString() }]
+    });
+    showToast('Thank you. The team will review it.', 'success');
+    renderFeedbackPage();
+  } catch (e) { showToast('Could not send: ' + e.message, 'error'); }
+}
+
+// What each user may do next with an item, given its status and the approval mode
+function fbNextAction(item) {
+  const st = item.status;
+  if (st === 'approved' || st === 'fixed' || st === 'rejected') return null;
+  if (_fb.settings.mode === 'employee_then_owner') {
+    if (st === 'new' && fbIsEmployeeApprover()) return 'employee';
+    if (st === 'employee_approved' && isOwnerSelf()) return 'owner';
+    return null;
+  }
+  return st === 'new' && isOwnerSelf() ? 'owner' : null;
+}
+
+async function renderFeedbackConsole(el) {
+  await loadFeedbackSettings();
+  const snap = await db.collection('platformFeedback').orderBy('createdAt', 'desc').limit(300).get().catch(() => ({ docs: [] }));
+  _fb.items = snap.docs.map(d => Object.assign({ id: d.id }, d.data()));
+  const shown = _fb.items.filter(i => _fb.filter === 'all' ? true : _fb.filter === 'open' ? !['fixed', 'rejected'].includes(i.status) : i.status === _fb.filter);
+  const settingsBox = isOwnerSelf() ? '<div class="table-container" style="padding:14px;margin-bottom:12px;">' +
+    '<strong>Approval setting</strong>' +
+    '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;align-items:flex-end;">' +
+    '<div class="form-group" style="margin:0;"><label>Who approves</label><select id="fbMode">' +
+    '<option value="employee_then_owner"' + (_fb.settings.mode === 'employee_then_owner' ? ' selected' : '') + '>Official team, then owner</option>' +
+    '<option value="owner_only"' + (_fb.settings.mode === 'owner_only' ? ' selected' : '') + '>Owner only</option></select></div>' +
+    '<div class="form-group" style="margin:0;flex:1;min-width:220px;"><label>Official team emails (comma separated)</label><input id="fbApprovers" value="' + escHtmlSafe((_fb.settings.approverEmails || []).join(', ')) + '"/></div>' +
+    '<button class="btn btn-primary btn-sm" style="width:auto;" onclick="saveFeedbackSettings()">Save setting</button></div></div>' : '';
+  const filters = ['open', 'new', 'employee_approved', 'approved', 'fixed', 'rejected', 'all'].map(f => '<button class="btn btn-secondary btn-sm" style="width:auto;" onclick="fbFilter(\'' + f + '\')">' + f.replace('_', ' ') + '</button>').join(' ');
+  const cards = shown.map((i, n) => {
+    const act = fbNextAction(i);
+    const btns = (act ? '<button class="btn btn-primary btn-sm" style="width:auto;" onclick="fbApprove(\'' + i.id + '\',\'' + act + '\')">' + (act === 'employee' ? '✅ Official team approve' : '✅ Owner approve') + '</button> ' +
+      '<button class="btn btn-secondary btn-sm" style="width:auto;" onclick="fbReject(\'' + i.id + '\')">❌ Reject</button> ' : '') +
+      (isOwnerSelf() && i.status === 'approved' ? '<button class="btn btn-secondary btn-sm" style="width:auto;" onclick="fbSetStatus(\'' + i.id + '\',\'fixed\')">✔ Mark fixed</button> ' : '') +
+      '<button class="btn btn-secondary btn-sm" style="width:auto;" onclick="fbCopy(\'' + i.id + '\')">📋 Copy for the developer</button>';
+    return '<div style="padding:12px 0;border-bottom:1px solid var(--border);">' +
+      '<strong>' + escHtmlSafe(i.type || '') + ': ' + escHtmlSafe(i.title || '') + '</strong>' +
+      '<div style="font-size:.8rem;color:var(--text2);">' + consoleRelTime(i.createdAt && i.createdAt.toDate ? i.createdAt.toDate() : null) + ' · from ' + escHtmlSafe(i.sentByName || '') + ' (' + escHtmlSafe(i.sentByRole || '') + ') · status: <strong>' + escHtmlSafe(String(i.status || '').replace('_', ' ')) + '</strong></div>' +
+      '<div style="font-size:.85rem;margin-top:4px;white-space:pre-wrap;">' + escHtmlSafe(i.description || '') + '</div>' +
+      '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;">' + btns + '</div></div>';
+  }).join('');
+  el.innerHTML = settingsBox + '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">' + filters + '</div>' +
+    '<div class="table-container" style="padding:14px;">' + (cards || '<div class="empty-state"><p>Nothing here.</p></div>') + '</div>';
+}
+
+function fbFilter(f) { _fb.filter = f; consoleRender(); }
+
+async function saveFeedbackSettings() {
+  const mode = (document.getElementById('fbMode') || {}).value || 'employee_then_owner';
+  const approverEmails = ((document.getElementById('fbApprovers') || {}).value || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+  try {
+    await db.collection('platformSettings').doc('feedbackApproval').set({ mode, approverEmails });
+    showToast('Saved', 'success');
+    consoleRender();
+  } catch (e) { showToast('Could not save: ' + e.message, 'error'); }
+}
+
+async function fbSetStatus(id, status, note) {
+  const ref = db.collection('platformFeedback').doc(id);
+  const cur = (await ref.get()).data() || {};
+  const history = (cur.history || []).concat([{ by: (currentUser && (currentUser.name || currentUser.email)) || '', action: status, note: note || '', at: new Date().toISOString() }]);
+  await ref.update({ status, history });
+}
+
+async function fbApprove(id, who) {
+  try {
+    if (who === 'employee') await fbSetStatus(id, 'employee_approved');
+    else await fbSetStatus(id, 'approved');
+    showToast(who === 'employee' ? 'Approved by the official team. The owner now approves.' : 'Approved. Ready to fix.', 'success');
+    consoleRender();
+  } catch (e) { showToast('Could not approve: ' + e.message, 'error'); }
+}
+
+async function fbReject(id) {
+  const why = prompt('Why is it rejected? (the sender will see this)', '');
+  if (why === null) return;
+  try { await fbSetStatus(id, 'rejected', why); showToast('Rejected', 'success'); consoleRender(); }
+  catch (e) { showToast('Could not reject: ' + e.message, 'error'); }
+}
+
+// The text to paste to the developer: one approved item, with the steps and the hospital
+function fbCopy(id) {
+  const i = _fb.items.find(x => x.id === id);
+  if (!i) return;
+  const text = 'MediFlow ' + (i.type || 'Bug') + ' (' + i.status + ')\nTitle: ' + (i.title || '') + '\nHospital: ' + (i.hospitalId || '') +
+    '\nFrom: ' + (i.sentByName || '') + ' (' + (i.sentByRole || '') + ')\n\n' + (i.description || '') + '\n\nApproval history:\n' +
+    (i.history || []).map(h => '- ' + h.action + ' by ' + h.by + (h.note ? ' (' + h.note + ')' : '')).join('\n');
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => showToast('Copied. Paste it to the developer.', 'success'), () => prompt('Copy this:', text));
+  } else prompt('Copy this:', text);
+}
+
+// ============ NEW BILL, STEP BY STEP ============
+// Step 1: the patient. Step 2: what is charged. Step 3: how it is paid. Step 4: check, save and print.
+let _bw = { step: 1, patient: null, items: [{ name: '', amount: '' }], method: 'cash', paidNow: true };
+
+function renderBillWizard() {
+  _bw = { step: 1, patient: null, items: [{ name: '', amount: '' }], method: 'cash', paidNow: true };
+  billWizardDraw();
+}
+
+function billWizardSteps() {
+  const names = ['Patient', 'Items', 'Payment', 'Confirm'];
+  return '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;">' + names.map((n, i) =>
+    '<span style="padding:6px 12px;border-radius:999px;font-size:.85rem;background:' + (_bw.step === i + 1 ? 'var(--accent)' : 'var(--surface2)') + ';color:' + (_bw.step === i + 1 ? '#000' : 'var(--text2)') + ';">' + (i + 1) + '. ' + n + '</span>').join('') + '</div>';
+}
+
+function billWizardDraw() {
+  const mc = document.getElementById('mainContent');
+  let body = '';
+  if (_bw.step === 1) {
+    body = '<p style="font-size:.9rem;">Type the patient ID (for example CTC-0042). Walk-in bills can skip this.</p>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;"><input id="bwPatId" placeholder="Patient ID" value="' + escHtmlSafe(_bw.patient ? _bw.patient.id : '') + '" style="flex:1;min-width:180px;"/>' +
+      '<button class="btn btn-secondary" style="width:auto;" onclick="billWizardFindPatient()">Find</button></div>' +
+      '<div id="bwPatInfo" style="margin-top:10px;font-size:.9rem;">' + (_bw.patient ? '✅ ' + escHtmlSafe(_bw.patient.name) + ' (' + escHtmlSafe(_bw.patient.id) + ')' : '') + '</div>' +
+      '<div style="display:flex;gap:8px;margin-top:16px;"><button class="btn btn-secondary" style="width:auto;" onclick="billWizardSetPatient(null)">Walk-in</button>' +
+      '<button class="btn btn-primary" style="width:auto;" onclick="billWizardNext()">Next →</button></div>';
+  } else if (_bw.step === 2) {
+    body = '<p style="font-size:.9rem;">Add each thing being charged, with its amount.</p>' +
+      _bw.items.map((it, i) => '<div style="display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap;"><input placeholder="e.g. Consultation" value="' + escHtmlSafe(it.name) + '" oninput="billWizardSet(' + i + ',\'name\',this.value)" style="flex:2;min-width:160px;"/>' +
+      '<input type="number" placeholder="₹" value="' + escHtmlSafe(it.amount) + '" oninput="billWizardSet(' + i + ',\'amount\',this.value)" style="flex:1;min-width:90px;"/>' +
+      '<button class="btn btn-secondary btn-sm" style="width:auto;" onclick="billWizardRemove(' + i + ')">✕</button></div>').join('') +
+      '<button class="btn btn-secondary btn-sm" style="width:auto;margin-top:4px;" onclick="billWizardAdd()">+ Add an item</button>' +
+      '<div style="font-size:1.1rem;font-weight:700;margin-top:12px;">Total: ₹' + billWizardTotal() + '</div>' +
+      '<div style="display:flex;gap:8px;margin-top:14px;"><button class="btn btn-secondary" style="width:auto;" onclick="billWizardBack()">← Back</button>' +
+      '<button class="btn btn-primary" style="width:auto;" onclick="billWizardNext()">Next →</button></div>';
+  } else if (_bw.step === 3) {
+    body = '<p style="font-size:.9rem;">How is it paid?</p>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;">' + [['cash', '💵 Cash'], ['upi', '📱 UPI'], ['card', '💳 Card'], ['healthCard', '🪪 Health card'], ['insurance', '🛡️ Insurance']].map(([v, l]) =>
+        '<button class="btn ' + (_bw.method === v ? 'btn-primary' : 'btn-secondary') + '" style="width:auto;" onclick="billWizardMethod(\'' + v + '\')">' + l + '</button>').join('') + '</div>' +
+      '<label style="display:flex;gap:8px;align-items:center;margin-top:14px;"><input type="checkbox" id="bwPaidNow"' + (_bw.paidNow ? ' checked' : '') + ' onchange="billWizardPaidNow(this.checked)"/> Paid now</label>' +
+      '<div style="display:flex;gap:8px;margin-top:14px;"><button class="btn btn-secondary" style="width:auto;" onclick="billWizardBack()">← Back</button>' +
+      '<button class="btn btn-primary" style="width:auto;" onclick="billWizardNext()">Next →</button></div>';
+  } else {
+    body = '<div style="padding:14px;border:1px solid var(--accent);border-radius:12px;">' +
+      '<div><strong>Patient:</strong> ' + escHtmlSafe(_bw.patient ? _bw.patient.name + ' (' + _bw.patient.id + ')' : 'Walk-in') + '</div>' +
+      _bw.items.filter(i => i.name || i.amount).map(i => '<div style="font-size:.9rem;margin-top:4px;">' + escHtmlSafe(i.name) + ' — ₹' + (Number(i.amount) || 0) + '</div>').join('') +
+      '<div style="font-size:1.1rem;font-weight:700;margin-top:10px;">Total: ₹' + billWizardTotal() + '</div>' +
+      '<div style="margin-top:4px;">Payment: ' + escHtmlSafe(_bw.method) + ' · ' + (_bw.paidNow ? 'Paid now' : 'Unpaid (will show as due)') + '</div></div>' +
+      '<div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap;"><button class="btn btn-secondary" style="width:auto;" onclick="billWizardBack()">← Back</button>' +
+      '<button class="btn btn-primary" style="width:auto;" onclick="billWizardSave(true)">Save and print</button>' +
+      '<button class="btn btn-secondary" style="width:auto;" onclick="billWizardSave(false)">Save without printing</button></div>';
+  }
+  mc.innerHTML = '<div class="page-header"><h2>🧾 New bill</h2><p>Four steps. Nothing is saved until the last step.</p></div>' +
+    '<div class="table-container" style="padding:20px;max-width:640px;">' + billWizardSteps() + body + '</div>';
+}
+
+function billWizardTotal() { return _bw.items.reduce((s, i) => s + (Number(i.amount) || 0), 0); }
+function billWizardNext() {
+  if (_bw.step === 1) {
+    const v = ((document.getElementById('bwPatId') || {}).value || '').trim();
+    if (!_bw.patient && v) { showToast('Find the patient first, or choose Walk-in', 'error'); return; }
+  }
+  if (_bw.step === 2) {
+    if (!_bw.items.some(i => i.name && Number(i.amount) > 0)) { showToast('Add at least one item with an amount', 'error'); return; }
+  }
+  _bw.step = Math.min(4, _bw.step + 1);
+  billWizardDraw();
+}
+function billWizardBack() { _bw.step = Math.max(1, _bw.step - 1); billWizardDraw(); }
+function billWizardSetPatient(p) { _bw.patient = p; billWizardNext(); }
+function billWizardSet(i, k, v) { _bw.items[i][k] = v; }
+function billWizardAdd() { _bw.items.push({ name: '', amount: '' }); billWizardDraw(); }
+function billWizardRemove(i) { _bw.items.splice(i, 1); if (!_bw.items.length) _bw.items.push({ name: '', amount: '' }); billWizardDraw(); }
+function billWizardMethod(m) { _bw.method = m; billWizardDraw(); }
+function billWizardPaidNow(v) { _bw.paidNow = !!v; }
+
+async function billWizardFindPatient() {
+  const id = ((document.getElementById('bwPatId') || {}).value || '').trim().toUpperCase();
+  const info = document.getElementById('bwPatInfo');
+  if (!id) { info.textContent = 'Type a patient ID.'; return; }
+  const snap = await db.collection('hospitals/' + currentHospitalId + '/patients').where('patientId', '==', id).limit(1).get().catch(() => null);
+  if (!snap || snap.empty) { info.textContent = 'Patient not found in this hospital.'; _bw.patient = null; return; }
+  const d = snap.docs[0].data();
+  _bw.patient = { id: d.patientId || id, name: d.name || '', docId: snap.docs[0].id };
+  info.textContent = '✅ ' + _bw.patient.name + ' (' + _bw.patient.id + ')';
+}
+
+async function billWizardSave(print) {
+  const items = _bw.items.filter(i => i.name && Number(i.amount) > 0).map(i => ({ name: i.name, amount: Number(i.amount) }));
+  const total = items.reduce((s, i) => s + i.amount, 0);
+  if (!items.length || !total) { showToast('Nothing to bill', 'error'); return; }
+  try {
+    const ref = await db.collection('hospitals/' + currentHospitalId + '/bills').add({
+      patientId: _bw.patient ? _bw.patient.id : '', patientName: _bw.patient ? _bw.patient.name : 'Walk-in',
+      items, purpose: items.map(i => i.name).join(', '), billType: 'bill', total,
+      paid: _bw.paidNow, paymentMethod: _bw.method, date: todayStr(),
+      paidAt: _bw.paidNow ? firebase.firestore.FieldValue.serverTimestamp() : null,
+      createdBy: currentUser.uid, createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+    await logAudit('bill_created', 'Bill ' + ref.id + ' ₹' + total + ' (' + _bw.method + ')');
+    if (print) {
+      const rows = items.map(i => '<tr><td style="padding:8px 0;border-bottom:1px solid #eee;">' + escHtmlSafe(i.name) + '</td><td style="text-align:right;padding:8px 0;border-bottom:1px solid #eee;">₹' + i.amount + '</td></tr>').join('');
+      printHtmlInFrame('<!DOCTYPE html><html><head><title>Bill</title><style>body{font-family:Arial,sans-serif;padding:24px;max-width:640px;margin:0 auto;}table{width:100%;border-collapse:collapse;}</style></head><body>' +
+        '<h2 style="text-align:center;">Bill</h2><div>Bill no: ' + ref.id + '</div><div>Date: ' + todayStr() + '</div>' +
+        '<div>Patient: ' + escHtmlSafe(_bw.patient ? _bw.patient.name + ' (' + _bw.patient.id + ')' : 'Walk-in') + '</div>' +
+        '<table style="margin-top:14px;"><tbody>' + rows + '<tr><td style="padding:10px 0;font-weight:700;">Total</td><td style="text-align:right;padding:10px 0;font-weight:700;">₹' + total + '</td></tr></tbody></table>' +
+        '<div style="margin-top:10px;">Payment: ' + escHtmlSafe(_bw.method) + (_bw.paidNow ? ' (paid)' : ' (due)') + '</div></body></html>');
+    }
+    showToast('✅ Bill saved', 'success');
+    renderBillWizard();
+  } catch (e) { showToast('Could not save the bill: ' + e.message, 'error'); }
 }
 
 // Asks the server to give waiting delivery orders to boys on duty. Safe to call often: it only touches unassigned orders.
