@@ -2,6 +2,7 @@
 <html lang="en">
 <head><meta name="color-scheme" content="light"><style>html{background:#ffffff}</style>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"><script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="/qrcode.js"></script>
 <meta name="google-site-verification" content="ohiBhDwiOJ05_h4KyDgLw_Ysgn23fzVQHdBL1jjL_l4" />
 <meta name="google-adsense-account" content="ca-pub-8092288160889921">
 <meta charset="UTF-8"/>
@@ -1532,6 +1533,7 @@ async function findPatientAccountsForLogin(identifier) {
 }
 
 async function completePatientLogin(acct, errEl) {
+  if (acct.patData && acct.patData.blocked) { errEl.textContent = 'Your account is blocked. ' + (acct.patData.blockedReason || 'Contact the hospital'); return; }
   const { patData, patDocId, hospId } = acct;
   const hospSnap = await db.collection('hospitals').doc(hospId).get();
   if (hospSnap.exists && hospSnap.data().status === 'blocked') {
@@ -1623,6 +1625,7 @@ async function handleLogin() {
         errEl.textContent = 'This hospital\'s service has been suspended. Reason: ' + reason;
         return;
       }
+      if (docData.blocked) { errEl.textContent = 'Your account is blocked. ' + (docData.blockedReason || 'Contact the hospital'); return; }
       currentUser = { ...docData, uid: docDocId };
       currentRole = 'doctor';
       currentHospitalId = docHospitalId;
@@ -1640,6 +1643,7 @@ async function handleLogin() {
     const adminSnap = await db.collection('admins').doc(uid).get();
     if (adminSnap.exists) {
       const adminData = adminSnap.data();
+      if (adminData.blocked) { await auth.signOut(); errEl.textContent = 'Your account is blocked. ' + (adminData.blockedReason || 'Contact MediFlow support'); return; }
       currentUser = { ...adminData, uid };
       currentRole = 'admin';
       currentHospitalId = (adminData.hospitalId || 'default').trim();
@@ -2300,7 +2304,7 @@ async function restoreSession() {
   try {
     if (session.role === 'delivery') {
       const boySnap = await db.collection('hospitals/' + session.hospitalId + '/deliveryBoys').doc(session.boyId).get();
-      if (!boySnap.exists || boySnap.data().active === false) { clearSession(); return false; }
+      if (!boySnap.exists || boySnap.data().active === false || boySnap.data().blocked === true) { clearSession(); return false; }
       const hospSnap = await db.collection('hospitals').doc(session.hospitalId).get();
       if (hospSnap.exists && hospSnap.data().homeDelivery === false) { clearSession(); return false; }
       currentUser = { ...boySnap.data(), uid: boySnap.id, role: 'delivery', hospitalId: session.hospitalId };
@@ -2314,6 +2318,7 @@ async function restoreSession() {
       if (snap.empty) { clearSession(); return false; }
       const hospSnap = await db.collection('hospitals').doc(session.hospitalId).get();
       if (hospSnap.exists && hospSnap.data().status === 'blocked') { clearSession(); return false; }
+      if (snap.docs[0].data().blocked) { clearSession(); return false; }
       currentUser = { ...snap.docs[0].data(), uid: snap.docs[0].id };
       currentRole = 'patient';
       currentHospitalId = session.hospitalId;
@@ -2802,9 +2807,12 @@ function getDefaultSidebarItems() {
   // Master-admin-only: hospital management (block/unblock, view all hospitals)
   if (currentRole === 'admin' && isOwnerSelf()) {
     menus.admin.push({icon:'🏢', label:'Manage Hospitals', page:'adminManageHospitals'});
+    menus.admin.push({icon:'🗂️', label:'Office Console', page:'adminOfficeConsole'});
     menus.admin.push({icon:'📚', label:'Platform Records', page:'superRecords'});
     menus.admin.push({icon:'🎬', label:'MediFlow Videos', page:'superVideos'});
   }
+  // A hospital admin manages the users of his own hospital (block, activity, CSV)
+  if (currentRole === 'admin' && !isOwnerSelf()) menus.admin.push({icon:'🗂️', label:'Users & Activity', page:'adminUserControl'});
   // Medical Manager and Medical Staff accounts only ever see the Medical Store — everything
   // else (billing, patients, staff, other payment approvals) stays off their menu entirely.
   if (currentRole === 'admin' && currentUser && (currentUser.role === 'medicalManager' || currentUser.role === 'medicalStaff')) {
@@ -2889,6 +2897,8 @@ function navigateTo(page) {
     adminInsurance: renderAdminInsurance,
     adminPrintHistory: renderAdminPrintHistory,
     adminManageHospitals: renderAdminManageHospitals,
+    adminOfficeConsole: () => renderOfficeConsole(false),
+    adminUserControl: () => renderOfficeConsole(true),
     adminDevice: renderAdminDevice,
     adminDisplaySetup: renderAdminDisplaySetup,
     adminDeliveryBoys: renderAdminDeliveryBoys,
@@ -14959,13 +14969,12 @@ async function printMedOrderTicket(orderId, mode) {
     const medList = (o.medicines || []).map(m => ({ name: m.name, qty: m.qty, sellPrice: m.sellPrice, subtotal: m.subtotal }));
 
     if (mode === 'code') {
-      const qrUrl = buildQRImageUrl(orderNumber);
       const html = `<!DOCTYPE html><html><head><title>Order Code - ${orderNumber}</title>
       <style>body{font-family:Arial,sans-serif;padding:30px;text-align:center;color:#000;} .box{border:3px solid #000;border-radius:12px;padding:24px;max-width:340px;margin:0 auto;}
       @media print{body{padding:10px;}}</style></head><body>
       <div class="box">
         <div style="font-size:16px;font-weight:700;margin-bottom:10px;">${hospName}</div>
-        <img src="${qrUrl}" style="width:220px;height:220px;"/>
+        ${lrCode39Svg(orderNumber, 110)}
         <div style="font-size:20px;font-weight:700;margin-top:12px;letter-spacing:1px;">${orderNumber}</div>
         <div style="font-size:13px;margin-top:6px;">${o.patientName || ''} ${o.patientId ? '(' + o.patientId + ')' : ''}</div>
         <div style="font-size:12px;color:#555;margin-top:4px;">${o.fulfillment === 'delivery' ? 'Home Delivery' : 'Store Pickup'}</div>
@@ -19743,8 +19752,9 @@ async function handleDeliveryLogin() {
     }
     if (!boyDoc) { errEl.textContent = 'Username not found. Ask the admin to create your account.'; return; }
     const b = boyDoc.data();
-    if (!(await pwVerify(pass, b.passwordHash || ''))) { errEl.textContent = 'Incorrect password.'; return; }
+    if (!(await pwVerify(pass, b.passwordHash || ''))) { await logFailedLogin(hid, user, 'Wrong password'); errEl.textContent = 'Incorrect password.'; return; }
     if (!b.active) { errEl.textContent = 'Your account is switched off. Ask the admin to switch it on.'; return; }
+    if (b.blocked) { errEl.textContent = 'Your account is blocked. ' + (b.blockedReason || 'Contact the hospital'); return; }
     const hosp = await db.collection('hospitals').doc(hid).get();
     if (hosp.exists && hosp.data().homeDelivery === false) { errEl.textContent = 'Home delivery is turned off for this medical store.'; return; }
     currentUser = { ...b, uid: boyDoc.id, role: 'delivery', hospitalId: hid };
@@ -19888,8 +19898,9 @@ async function renderDeliveryHome() {
     '<div id="dutyCard" style="margin-bottom:16px;"></div>' +
     '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;">' +
     '<div onclick="navigateTo(\'deliveryWallet\')" style="cursor:pointer;padding:14px 18px;border-radius:14px;background:var(--surface2);border:1px solid var(--accent);min-width:180px;">' +
-    '<div style="font-size:.78rem;color:var(--text2);">💰 Wallet (tap to see history)</div>' +
+    '<div style="font-size:.78rem;color:var(--text2);">💰 Total earned (tap for history)</div>' +
     '<div id="walletChip" style="font-size:1.4rem;font-weight:800;margin-top:4px;">₹ …</div></div>' +
+    '<div style="padding:14px 18px;border-radius:14px;background:rgba(34,197,94,.12);border:2px solid var(--green);min-width:180px;"><div style="font-size:.78rem;color:var(--text2);">Earned today</div><div id="earnedChip" style="font-size:1.4rem;font-weight:800;margin-top:4px;color:var(--green);">₹ …</div></div>' +
     '<div style="padding:14px 18px;border-radius:14px;background:var(--surface2);border:1px solid var(--accent);min-width:180px;">' +
     '<div style="font-size:.78rem;color:var(--text2);">⭐ My rating from customers</div>' +
     '<div id="ratingChip" style="font-size:1.4rem;font-weight:800;margin-top:4px;">…</div></div></div>' +
@@ -19900,6 +19911,10 @@ async function renderDeliveryHome() {
     const bal = entries.reduce((s, e) => s + (e.type === 'credit' ? 1 : -1) * (Number(e.amount) || 0), 0);
     const chip = document.getElementById('walletChip');
     if (chip) chip.textContent = '₹ ' + (Math.round(bal * 100) / 100);
+    const todayKey = todayStr();
+    const earned = entries.filter(e => e.type === 'credit' && e.createdAt && e.createdAt.toDate && todayStrFromDate(e.createdAt.toDate()) === todayKey).reduce((s, e) => s + (Number(e.amount) || 0), 0);
+    const et = document.getElementById('earnedChip');
+    if (et) et.textContent = '₹ ' + (Math.round(earned * 100) / 100);
   } catch (e) { /* the wallet chip stays blank */ }
   try { await renderDutyCard(); } catch (e) { /* the switch stays blank */ }
   try {
@@ -20000,12 +20015,12 @@ function deliveryBoyButtonsHtml(id, o) {
   return row(btn('btn-primary', 'markOutForDelivery(' + sid + ')', '🚚 Mark out for delivery'));
 }
 
-let _boyScan = { orderId: null, phase: null, stream: null, timer: null, camera: false };
+let _boyScan = { orderId: null, phase: null, stream: null, timer: null, camera: false, loopId: 0, paused: false };
 
 function boyScanField() { return _boyScan.phase === 'door' ? 'doorScans' : 'pickupScans'; }
 
 async function openBoyScan(orderId, phase) {
-  _boyScan = { orderId: orderId, phase: phase, stream: null, timer: null, camera: false };
+  _boyScan = { orderId: orderId, phase: phase, stream: null, timer: null, camera: false, loopId: _boyScan.loopId, paused: false };
   if (!document.getElementById('boyScanOverlay')) {
     document.body.insertAdjacentHTML('beforeend',
       '<div id="boyScanOverlay" style="position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:16px;">' +
@@ -20037,7 +20052,7 @@ async function renderBoyScan() {
     (next ? '<div style="display:flex;gap:6px;margin-top:12px;flex-wrap:wrap;"><input id="boyScanCode" placeholder="Type the barcode number" style="flex:1;min-width:160px;"/>' +
       '<button class="btn btn-primary btn-sm" style="width:auto;" onclick="submitBoyScanCode()">Add</button></div>' +
       (_boyScan.camera
-        ? '<video id="boyScanVideo" playsinline muted style="width:100%;border-radius:10px;background:#000;margin-top:10px;"></video>'
+        ? '<video id="boyScanVideo" playsinline muted autoplay style="width:100%;border-radius:10px;background:#000;margin-top:10px;"></video>'
         : '<div style="margin-top:10px;"><button class="btn btn-secondary btn-sm" style="width:auto;" onclick="startBoyCamera()">📷 Scan with camera</button></div>') : '') +
     '<div id="boyScanMsg" style="font-size:.8rem;margin-top:8px;color:var(--orange);"></div>';
   if (_boyScan.camera && _boyScan.stream) {
@@ -20099,27 +20114,33 @@ function attachZxingReader(video) {
   if (_zxingReader) { try { _zxingReader.reset(); } catch (e) {} }
   _zxingReader = new ZXing.BrowserMultiFormatReader();
   _zxingReader.decodeFromVideoElement(video, result => {
-    if (!result || !_boyScan.stream) return;
-    const code = result.getText().trim();
-    stopBoyCamera();
-    addBoyScan(code).catch(e => setBoyScanMsg('Could not save: ' + e.message));
+    if (!result || !_boyScan.stream || _boyScan.paused) return;
+    readBarcodeFound(result.getText().trim());
   });
 }
+
+// A barcode was read: save it, and pause for a moment so the same packet is not read again.
+// The camera stays on, so the next product is scanned straight away.
+function readBarcodeFound(code) {
+  _boyScan.paused = true;
+  addBoyScan(code)
+    .catch(e => setBoyScanMsg('Could not save: ' + e.message))
+    .finally(() => setTimeout(() => { _boyScan.paused = false; }, 2500));
+}
+
 function attachBarcodeReader(video) {
   if (!('BarcodeDetector' in window)) { attachZxingReader(video); return; }
   let detector;
   try { detector = new BarcodeDetector({ formats: ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128', 'code_39', 'qr_code'] }); }
   catch (e) { setBoyScanMsg('Camera reading is not supported here. Type the barcode number instead.'); return; }
+  // each new video element starts a new reading loop; the old loop stops itself
+  const myId = ++_boyScan.loopId;
   const tick = async () => {
-    if (!_boyScan.stream) return;
-    if (video.readyState >= 2) {
+    if (myId !== _boyScan.loopId || !_boyScan.stream) return;
+    if (!_boyScan.paused && video.readyState >= 2) {
       try {
         const found = await detector.detect(video);
-        if (found.length && found[0].rawValue) {
-          stopBoyCamera();
-          await addBoyScan(String(found[0].rawValue).trim());
-          return;
-        }
+        if (found.length && found[0].rawValue) readBarcodeFound(String(found[0].rawValue).trim());
       } catch (e) { /* try the next frame */ }
     }
     _boyScan.timer = setTimeout(tick, 300);
@@ -20139,6 +20160,224 @@ function closeBoyScan() {
   const ov = document.getElementById('boyScanOverlay');
   if (ov) ov.style.display = 'none';
   _boyScan.orderId = null;
+}
+
+// ============ OFFICE CONSOLE: USERS, ACTIVITY, SUSPICIOUS ACTIVITY, BLOCKING, CSV ============
+// The platform owner sees every hospital. A hospital admin sees only their own hospital (same screen).
+let _console = { hospitalOnly: false, tab: 'users', users: [], logs: [], hospitals: {} };
+
+async function loadOfficeConsoleData(hospitalOnly) {
+  const hospIds = [];
+  _console.hospitals = {};
+  if (hospitalOnly) {
+    hospIds.push(currentHospitalId);
+    const hs = await db.collection('hospitals').doc(currentHospitalId).get();
+    _console.hospitals[currentHospitalId] = (hs.exists && hs.data().name) || currentHospitalId;
+  } else {
+    const hs = await db.collection('hospitals').get();
+    hs.docs.forEach(d => { hospIds.push(d.id); _console.hospitals[d.id] = d.data().name || d.id; });
+  }
+  const users = [], logs = [];
+  for (const hid of hospIds) {
+    const hname = _console.hospitals[hid];
+    const base = 'hospitals/' + hid;
+    const [pats, docs, boys, adm, audit] = await Promise.all([
+      db.collection(base + '/patients').limit(2000).get().catch(() => ({ docs: [] })),
+      db.collection(base + '/doctors').limit(500).get().catch(() => ({ docs: [] })),
+      db.collection(base + '/deliveryBoys').limit(500).get().catch(() => ({ docs: [] })),
+      db.collection('admins').where('hospitalId', '==', hid).get().catch(() => ({ docs: [] })),
+      db.collection(base + '/auditLog').orderBy('createdAt', 'desc').limit(200).get().catch(() => ({ docs: [] }))
+    ]);
+    pats.docs.forEach(d => { const x = d.data(); users.push({ type: 'Patient', hospitalId: hid, hospital: hname, docId: d.id, name: x.name || '', id: x.patientId || '', contact: x.phone || '', blocked: x.blocked === true, reason: x.blockedReason || '' }); });
+    docs.docs.forEach(d => { const x = d.data(); users.push({ type: 'Doctor', hospitalId: hid, hospital: hname, docId: d.id, name: x.name || '', id: x.doctorId || '', contact: x.phone || '', blocked: x.blocked === true, reason: x.blockedReason || '' }); });
+    boys.docs.forEach(d => { const x = d.data(); users.push({ type: 'Delivery boy', hospitalId: hid, hospital: hname, docId: d.id, name: x.name || '', id: x.username || '', contact: x.phone || '', blocked: x.blocked === true, reason: x.blockedReason || '' }); });
+    adm.docs.forEach(d => { const x = d.data(); users.push({ type: 'Admin', hospitalId: hid, hospital: hname, docId: d.id, name: x.name || '', id: x.email || '', contact: x.email || '', blocked: x.blocked === true, reason: x.blockedReason || '' }); });
+    audit.docs.forEach(d => { const x = d.data(); logs.push({ hospitalId: hid, hospital: hname, at: x.createdAt && x.createdAt.toDate ? x.createdAt.toDate() : null, actor: x.actorName || '', role: x.actorRole || '', action: x.action || '', details: x.details || '' }); });
+  }
+  users.forEach(u => {
+    const times = logs.filter(l => l.hospitalId === u.hospitalId && l.action === 'login' && l.actor === u.name && l.at).map(l => l.at.getTime());
+    u.lastLogin = times.length ? new Date(Math.max(...times)) : null;
+  });
+  logs.sort((a, b) => (b.at ? b.at.getTime() : 0) - (a.at ? a.at.getTime() : 0));
+  _console.users = users;
+  _console.logs = logs;
+  _console.hospitalOnly = !!hospitalOnly;
+}
+
+// Things to look at: blocked accounts, many logins from one account in an hour, and repeated failed logins
+function consoleSuspicious() {
+  const out = [];
+  _console.users.forEach(u => {
+    if (u.blocked) out.push({ level: 'Blocked', who: u.name, type: u.type, hospital: u.hospital, detail: 'Blocked' + (u.reason ? ': ' + u.reason : '') });
+  });
+  const hourAgo = Date.now() - 3600000;
+  const logins = {}, fails = {};
+  _console.logs.forEach(l => {
+    const k = l.hospitalId + '|' + l.actor;
+    if (l.action === 'login' && l.at && l.at.getTime() > hourAgo) logins[k] = (logins[k] || 0) + 1;
+    if (l.action === 'login_failed') fails[l.hospitalId + '|' + l.details] = (fails[l.hospitalId + '|' + l.details] || 0) + 1;
+  });
+  Object.keys(logins).forEach(k => {
+    if (logins[k] < 5) return;
+    const [hid, who] = k.split('|');
+    out.push({ level: 'Check', who: who, type: 'Login', hospital: _console.hospitals[hid] || hid, detail: logins[k] + ' logins in the last hour (the account may be shared)' });
+  });
+  Object.keys(fails).forEach(k => {
+    if (fails[k] < 3) return;
+    const [hid, who] = k.split('|');
+    out.push({ level: 'Check', who: who, type: 'Failed logins', hospital: _console.hospitals[hid] || hid, detail: fails[k] + ' wrong-password attempts' });
+  });
+  return out;
+}
+
+function consoleRelTime(d) {
+  return d ? d.toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
+}
+
+async function renderOfficeConsole(hospitalOnly) {
+  const mc = document.getElementById('mainContent');
+  if (!hospitalOnly && !isOwnerSelf()) {
+    mc.innerHTML = '<div class="page-header"><h2>Access Denied</h2><p>This page is for the MediFlow system admin only.</p></div>';
+    return;
+  }
+  _console.tab = 'users';
+  mc.innerHTML = '<div class="page-header"><h2>🗂️ ' + (hospitalOnly ? 'Users &amp; Activity' : 'Office Console') + '</h2>' +
+    '<p>' + (hospitalOnly ? 'Your hospital\'s users, activity and blocking.' : 'Every hospital, user and activity on MediFlow. Block users or export CSV.') + '</p></div>' +
+    '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;">' +
+    ['users', 'activity', 'suspicious', 'export'].map(t => '<button class="btn btn-secondary btn-sm" style="width:auto;" onclick="consoleTab(\'' + t + '\')">' + ({ users: '👥 Users', activity: '📜 Activity', suspicious: '🚨 Suspicious', export: '⬇️ Export CSV' })[t] + '</button>').join('') +
+    '<button class="btn btn-secondary btn-sm" style="width:auto;" onclick="renderOfficeConsole(' + (hospitalOnly ? 'true' : 'false') + ')">🔄 Refresh</button></div>' +
+    '<div id="consoleBody"><div class="empty-state"><p>Loading…</p></div></div>';
+  try {
+    await loadOfficeConsoleData(!!hospitalOnly);
+    consoleRender();
+  } catch (e) {
+    document.getElementById('consoleBody').innerHTML = '<div class="empty-state"><p>Could not load: ' + escHtmlSafe(e.message) + '</p></div>';
+  }
+}
+
+function consoleTab(t) { _console.tab = t; consoleRender(); }
+
+function consoleRender() {
+  const el = document.getElementById('consoleBody');
+  if (!el) return;
+  if (_console.tab === 'users') return consoleRenderUsers(el);
+  if (_console.tab === 'activity') return consoleRenderActivity(el);
+  if (_console.tab === 'suspicious') return consoleRenderSuspicious(el);
+  el.innerHTML = '<div class="table-container" style="padding:20px;max-width:720px;">' +
+    '<div class="section-title">Export</div>' +
+    '<p style="font-size:.85rem;color:var(--text2);">Downloads a CSV file you can open in Excel or Google Sheets.</p>' +
+    '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">' +
+    '<button class="btn btn-primary btn-sm" style="width:auto;" onclick="consoleExport(\'users\')">⬇️ Users CSV</button>' +
+    '<button class="btn btn-primary btn-sm" style="width:auto;" onclick="consoleExport(\'activity\')">⬇️ Activity CSV</button>' +
+    '<button class="btn btn-primary btn-sm" style="width:auto;" onclick="consoleExport(\'suspicious\')">⬇️ Suspicious CSV</button></div></div>';
+}
+
+function consoleRenderUsers(el) {
+  const rows = _console.users.map((u, i) => {
+    const self = u.docId === currentUser.uid && u.type === 'Admin';
+    return '<tr style="border-bottom:1px solid var(--border);">' +
+      '<td style="padding:8px;">' + u.type + '</td>' +
+      '<td style="padding:8px;"><strong>' + escHtmlSafe(u.name) + '</strong><div style="font-size:.75rem;color:var(--text2);">' + escHtmlSafe(u.id) + '</div></td>' +
+      (_console.hospitalOnly ? '' : '<td style="padding:8px;">' + escHtmlSafe(u.hospital) + '</td>') +
+      '<td style="padding:8px;font-size:.8rem;">' + consoleRelTime(u.lastLogin) + '</td>' +
+      '<td style="padding:8px;color:' + (u.blocked ? 'var(--orange)' : 'var(--green)') + ';">' + (u.blocked ? 'Blocked' : 'Active') + '</td>' +
+      '<td style="padding:8px;">' + (self ? '—' : '<button class="btn btn-secondary btn-sm" style="width:auto;" onclick="consoleToggleBlock(' + i + ')">' + (u.blocked ? 'Unblock' : 'Block') + '</button>') + '</td></tr>';
+  }).join('');
+  el.innerHTML = '<div class="table-container" style="padding:12px;overflow-x:auto;">' +
+    '<div style="font-size:.85rem;margin-bottom:8px;">' + _console.users.length + ' users · ' + _console.users.filter(u => u.blocked).length + ' blocked</div>' +
+    (rows ? '<table style="width:100%;border-collapse:collapse;font-size:.85rem;"><thead><tr style="text-align:left;color:var(--text2);">' +
+      '<th style="padding:8px;">Type</th><th style="padding:8px;">Name</th>' + (_console.hospitalOnly ? '' : '<th style="padding:8px;">Hospital</th>') +
+      '<th style="padding:8px;">Last login</th><th style="padding:8px;">Status</th><th style="padding:8px;"></th></tr></thead><tbody>' + rows + '</tbody></table>'
+      : '<div class="empty-state"><p>No users yet.</p></div>') + '</div>';
+}
+
+function consoleRenderActivity(el) {
+  const rows = _console.logs.slice(0, 300).map(l => '<tr style="border-bottom:1px solid var(--border);">' +
+    '<td style="padding:8px;font-size:.8rem;">' + consoleRelTime(l.at) + '</td>' +
+    (_console.hospitalOnly ? '' : '<td style="padding:8px;">' + escHtmlSafe(l.hospital) + '</td>') +
+    '<td style="padding:8px;">' + escHtmlSafe(l.actor) + '<div style="font-size:.75rem;color:var(--text2);">' + escHtmlSafe(l.role) + '</div></td>' +
+    '<td style="padding:8px;">' + escHtmlSafe(l.action) + '</td>' +
+    '<td style="padding:8px;font-size:.8rem;">' + escHtmlSafe(l.details) + '</td></tr>').join('');
+  el.innerHTML = '<div class="table-container" style="padding:12px;overflow-x:auto;">' +
+    '<div style="font-size:.85rem;margin-bottom:8px;">Latest ' + Math.min(300, _console.logs.length) + ' of ' + _console.logs.length + ' events</div>' +
+    (rows ? '<table style="width:100%;border-collapse:collapse;font-size:.85rem;"><thead><tr style="text-align:left;color:var(--text2);">' +
+      '<th style="padding:8px;">When</th>' + (_console.hospitalOnly ? '' : '<th style="padding:8px;">Hospital</th>') +
+      '<th style="padding:8px;">Who</th><th style="padding:8px;">Action</th><th style="padding:8px;">Details</th></tr></thead><tbody>' + rows + '</tbody></table>'
+      : '<div class="empty-state"><p>No activity yet.</p></div>') + '</div>';
+}
+
+function consoleRenderSuspicious(el) {
+  const items = consoleSuspicious();
+  el.innerHTML = '<div class="table-container" style="padding:14px;">' +
+    (items.length ? items.map(s => '<div style="padding:10px 0;border-bottom:1px solid var(--border);">' +
+      '<strong style="color:' + (s.level === 'Blocked' ? 'var(--orange)' : 'var(--accent)') + ';">' + s.level + '</strong> · ' + escHtmlSafe(s.who) +
+      ' <span style="font-size:.8rem;color:var(--text2);">(' + escHtmlSafe(s.type) + ', ' + escHtmlSafe(s.hospital) + ')</span>' +
+      '<div style="font-size:.85rem;margin-top:3px;">' + escHtmlSafe(s.detail) + '</div></div>').join('')
+      : '<div class="empty-state"><p>Nothing suspicious found.</p></div>') + '</div>';
+}
+
+// Blocks or unblocks one user. The block is checked at login, so a blocked user cannot sign in again.
+async function consoleToggleBlock(i) {
+  const u = _console.users[i];
+  if (!u) return;
+  const block = !u.blocked;
+  let reason = '';
+  if (block) {
+    reason = prompt('Reason for blocking ' + u.name + ' (they will see it):', 'Blocked by the hospital');
+    if (reason === null) return;
+  }
+  try {
+    const ref = u.type === 'Admin' ? db.collection('admins').doc(u.docId)
+      : db.collection('hospitals/' + u.hospitalId + '/' + (u.type === 'Patient' ? 'patients' : u.type === 'Doctor' ? 'doctors' : 'deliveryBoys')).doc(u.docId);
+    await ref.update(block
+      ? { blocked: true, blockedReason: reason, blockedAt: firebase.firestore.FieldValue.serverTimestamp(), blockedBy: currentUser.name || currentUser.email || '' }
+      : { blocked: false, blockedReason: '', blockedAt: firebase.firestore.FieldValue.delete(), blockedBy: '' });
+    await logAudit(block ? 'user_blocked' : 'user_unblocked', u.type + ' ' + u.name + ' (' + u.id + ')' + (reason ? ': ' + reason : ''), u.hospitalId);
+    u.blocked = block;
+    u.reason = reason;
+    showToast((block ? 'Blocked ' : 'Unblocked ') + u.name, 'success');
+    consoleRender();
+  } catch (e) { showToast('Could not change the block: ' + e.message, 'error'); }
+}
+
+function consoleCsv(rows, headers) {
+  const esc = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+  return [headers.map(esc).join(',')].concat(rows.map(r => headers.map(h => esc(r[h])).join(','))).join('\r\n');
+}
+
+function consoleExport(kind) {
+  let text, name;
+  if (kind === 'users') {
+    text = consoleCsv(_console.users.map(u => ({ Type: u.type, Name: u.name, ID: u.id, Contact: u.contact, Hospital: u.hospital, 'Last login': consoleRelTime(u.lastLogin), Status: u.blocked ? 'Blocked' : 'Active', 'Block reason': u.reason })),
+      ['Type', 'Name', 'ID', 'Contact', 'Hospital', 'Last login', 'Status', 'Block reason']);
+    name = 'mediflow-users.csv';
+  } else if (kind === 'activity') {
+    text = consoleCsv(_console.logs.map(l => ({ When: consoleRelTime(l.at), Hospital: l.hospital, Who: l.actor, Role: l.role, Action: l.action, Details: l.details })),
+      ['When', 'Hospital', 'Who', 'Role', 'Action', 'Details']);
+    name = 'mediflow-activity.csv';
+  } else {
+    text = consoleCsv(consoleSuspicious().map(s => ({ Level: s.level, Who: s.who, Type: s.type, Hospital: s.hospital, Detail: s.detail })),
+      ['Level', 'Who', 'Type', 'Hospital', 'Detail']);
+    name = 'mediflow-suspicious.csv';
+  }
+  const blob = new Blob(['﻿' + text], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+}
+
+// A wrong password on a delivery login is recorded, so the console can show repeated attempts
+async function logFailedLogin(hospitalId, username, why) {
+  try {
+    await db.collection('hospitals/' + hospitalId + '/auditLog').add({
+      action: 'login_failed', details: username, actorName: username, actorEmail: '',
+      actorRole: 'login attempt', reason: why,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+  } catch (e) { /* recording must never block the login screen */ }
 }
 
 // Asks the server to give waiting delivery orders to boys on duty. Safe to call often: it only touches unassigned orders.
@@ -21577,6 +21816,10 @@ function buildUPIUrl(upiId, hospName, amount, note) {
 }
 
 function buildQRImageUrl(upiUrl) {
+  // made on this site; the outside QR service is only a fallback if the library did not load
+  try {
+    if (typeof qrcode === 'function') { const q = qrcode(0, 'M'); q.addData(String(upiUrl)); q.make(); return q.createDataURL(6, 2); }
+  } catch (e) { /* fall back below */ }
   return 'https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=' + encodeURIComponent(upiUrl);
 }
 
