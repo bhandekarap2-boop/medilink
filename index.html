@@ -14934,9 +14934,15 @@ function showPharmacySaleReceipt(billId, patientId, patientName, items, totals) 
 }
 
 // Printing goes through a hidden frame on this page. Browsers block a new popup window for printing
-// (the "Popup blocked" message), but they do not block this.
+// (the "Popup blocked" message), but they do not block this. On phones a hidden frame cannot print,
+// so the page opens in a full-screen preview instead, where the phone's own Print / Share / Save as PDF works.
+function isPhoneScreen() {
+  return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || (window.matchMedia && window.matchMedia('(max-width: 820px)').matches);
+}
+
 function printHtmlInFrame(html) {
   const clean = html.replace(/<script>(?:(?!<\/script>)[\s\S])*window\.print\(\)(?:(?!<\/script>)[\s\S])*<\/script>/g, '');
+  if (isPhoneScreen()) { showPrintPreview(clean); return; }
   const frame = document.createElement('iframe');
   frame.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden;';
   document.body.appendChild(frame);
@@ -14948,6 +14954,36 @@ function printHtmlInFrame(html) {
     setTimeout(() => frame.remove(), 2000);
   }, 500);
 }
+
+// Full-screen preview for phones: the page, and buttons to print, save as PDF, or share it
+function showPrintPreview(clean) {
+  let ov = document.getElementById('printPreview');
+  if (!ov) {
+    ov = document.createElement('div');
+    ov.id = 'printPreview';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:100002;background:rgba(0,0,0,.7);display:flex;flex-direction:column;padding:12px;gap:8px;';
+    ov.innerHTML = '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
+      '<a id="printOpen" target="_blank" rel="noopener" class="btn btn-primary btn-sm" style="text-decoration:none;flex:1;text-align:center;">🖨️ Print or save as PDF</a>' +
+      '<button id="printShare" class="btn btn-secondary btn-sm" style="flex:1;">📤 Share</button>' +
+      '<button id="printClose" class="btn btn-secondary btn-sm" style="flex:1;">Close</button></div>' +
+      '<iframe id="printFrame" style="flex:1;width:100%;border:0;border-radius:10px;background:#fff;"></iframe>';
+    document.body.appendChild(ov);
+    document.getElementById('printClose').onclick = () => { ov.style.display = 'none'; };
+  }
+  const url = URL.createObjectURL(new Blob([clean], { type: 'text/html' }));
+  document.getElementById('printOpen').href = url;
+  document.getElementById('printFrame').srcdoc = clean;
+  document.getElementById('printShare').onclick = async () => {
+    const file = new File([clean], 'receipt.html', { type: 'text/html' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try { await navigator.share({ files: [file], title: 'Receipt' }); } catch (e) { /* cancelled */ }
+    } else {
+      showToast('Sharing is not supported here. Use "Print or save as PDF".', 'error');
+    }
+  };
+  ov.style.display = 'flex';
+}
+
 // A stand-in for the popup window: the page it is given is printed through printHtmlInFrame.
 function printWindowShim() {
   let buf = '', printed = false;
