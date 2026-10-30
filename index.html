@@ -21030,6 +21030,7 @@ function billWizardDraw() {
     body = billWizardPayPanel();
   }
   mc.innerHTML = '<div class="page-header"><h2>🧾 New bill</h2><p>Four steps. Then print the receipt and take the payment.</p></div>' +
+    '<div style="text-align:right;margin-bottom:8px;"><button class="btn btn-secondary btn-sm" style="width:auto;" onclick="renderBillHistory()">📜 Bill history</button></div>' +
     '<div class="table-container" style="padding:20px;max-width:640px;">' + billWizardSteps() + body + '</div>';
 }
 
@@ -21140,6 +21141,64 @@ function billWizardPrint() {
     '<div>Patient: ' + escHtmlSafe(_bw.patient ? _bw.patient.name + ' (' + _bw.patient.id + ')' : 'Walk-in') + '</div>' +
     '<table style="margin-top:14px;"><tbody>' + rows + '<tr><td style="padding:10px 0;font-weight:700;">Total</td><td style="text-align:right;padding:10px 0;font-weight:700;">₹' + _bw.savedTotal + '</td></tr></tbody></table>' +
     '<div style="margin-top:10px;font-weight:700;">Status: ' + status + '</div></body></html>');
+}
+
+// ============ NEW BILL: HISTORY ============
+// The last 200 bills of the hospital. From here: print a receipt, or take the payment of a bill not yet paid.
+let _bh = { rows: [], filter: 'all' };
+
+async function renderBillHistory() {
+  const mc = document.getElementById('mainContent');
+  mc.innerHTML = '<div class="page-header"><h2>📜 Bill history</h2><p>Every bill of this hospital. Print a receipt, or take the payment of a bill that is not paid yet.</p></div>' +
+    '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">' +
+    ['all', 'unpaid', 'paid'].map(f => '<button class="btn ' + (_bh.filter === f ? 'btn-primary' : 'btn-secondary') + ' btn-sm" style="width:auto;" onclick="billHistoryFilter(\'' + f + '\')">' + ({ all: 'All', unpaid: 'Not paid', paid: 'Paid' })[f] + '</button>').join('') +
+    '<button class="btn btn-secondary btn-sm" style="width:auto;" onclick="renderBillWizard()">➕ New bill</button></div>' +
+    '<div class="table-container" style="padding:14px;"><div id="bhList"><div class="empty-state"><p>Loading…</p></div></div></div>';
+  const snap = await db.collection('hospitals/' + currentHospitalId + '/bills').orderBy('createdAt', 'desc').limit(200).get().catch(() => ({ docs: [] }));
+  _bh.rows = snap.docs.map(d => Object.assign({ id: d.id }, d.data()));
+  billHistoryDraw();
+}
+
+function billHistoryFilter(f) { _bh.filter = f; renderBillHistory(); }
+
+function billHistoryDraw() {
+  const el = document.getElementById('bhList');
+  if (!el) return;
+  const list = _bh.rows.filter(r => _bh.filter === 'all' || (_bh.filter === 'paid' ? !!r.paid : !r.paid));
+  if (!list.length) { el.innerHTML = '<div class="empty-state"><p>No bills here yet.</p></div>'; return; }
+  el.innerHTML = list.map(r => {
+    const when = consoleRelTime(r.createdAt && r.createdAt.toDate ? r.createdAt.toDate() : null) || r.date || '';
+    const status = r.paid ? '<span style="color:var(--green);">✅ Paid' + (r.paymentMethod ? ' · ' + escHtmlSafe(r.paymentMethod) : '') + '</span>' : '<span style="color:var(--orange);">⏳ Not paid</span>';
+    return '<div style="padding:12px 0;border-bottom:1px solid var(--border);">' +
+      '<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;"><strong>' + escHtmlSafe(r.patientName || 'Walk-in') + (r.patientId ? ' <span style="font-size:.78rem;color:var(--text2);">(' + escHtmlSafe(r.patientId) + ')</span>' : '') + '</strong><strong>₹' + (Number(r.total) || 0) + '</strong></div>' +
+      '<div style="font-size:.8rem;color:var(--text2);margin-top:2px;">' + escHtmlSafe(when) + ' · Bill ' + escHtmlSafe(r.id) + '</div>' +
+      '<div style="font-size:.85rem;margin-top:4px;">' + status + ' · ' + escHtmlSafe(r.purpose || '') + '</div>' +
+      '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;">' +
+      '<button class="btn btn-secondary btn-sm" style="width:auto;" onclick="billHistoryPrint(\'' + r.id + '\')">🧾 Receipt</button>' +
+      (r.paid ? '' : '<button class="btn btn-primary btn-sm" style="width:auto;" onclick="billHistoryPay(\'' + r.id + '\')">💵 Take payment</button>') +
+      '</div></div>';
+  }).join('');
+}
+
+// Loads a saved bill into the bill screen's state, so the receipt and payment buttons work for it
+function billHistoryLoad(id) {
+  const r = _bh.rows.find(x => x.id === id);
+  if (!r) { showToast('Bill not found', 'error'); return null; }
+  const items = (r.items && r.items.length) ? r.items : [{ name: r.purpose || 'Bill', amount: Number(r.total) || 0 }];
+  _bw = { step: 4, patient: r.patientId ? { id: r.patientId, name: r.patientName || '' } : null,
+    items: items.map(i => ({ name: i.name, amount: String(i.amount) })), method: r.paymentMethod || 'cash',
+    billId: r.id, savedItems: items, savedTotal: Number(r.total) || 0, paidMethod: r.paid ? (r.paymentMethod || 'paid') : '' };
+  return r;
+}
+
+function billHistoryPrint(id) {
+  if (!billHistoryLoad(id)) return;
+  billWizardPrint();
+}
+
+function billHistoryPay(id) {
+  if (!billHistoryLoad(id)) return;
+  billWizardDraw();
 }
 
 // Asks the server to give waiting delivery orders to boys on duty. Safe to call often: it only touches unassigned orders.
