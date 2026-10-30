@@ -20240,6 +20240,7 @@ async function renderOfficeConsole(hospitalOnly) {
     mc.innerHTML = '<div class="page-header"><h2>Access Denied</h2><p>This page is for the MediFlow system admin only.</p></div>';
     return;
   }
+  consoleOpenAnimation();
   _console.tab = 'users';
   mc.innerHTML = '<div class="page-header"><h2>🗂️ ' + (hospitalOnly ? 'Users &amp; Activity' : 'Office Console') + '</h2>' +
     '<p>' + (hospitalOnly ? 'Your hospital\'s users, activity and blocking.' : 'Every hospital, user and activity on MediFlow. Block users or export CSV.') + '</p></div>' +
@@ -20504,18 +20505,139 @@ const CONSOLE_EXPORTS = [
   { kind: 'report', label: '📊 Overall report (one row per hospital)' }
 ];
 
+// ============ OFFICE CONSOLE: ALL PAYMENTS, MONTH-END REPORT, OPENING SCREEN ============
+
+// The office console opens with a short animation, then shows its own screen.
+function consoleOpenAnimation() {
+  if (document.getElementById('consoleIntro')) return;
+  const intro = document.createElement('div');
+  intro.id = 'consoleIntro';
+  intro.style.cssText = 'position:fixed;inset:0;z-index:100001;background:#0b1220;display:flex;flex-direction:column;align-items:center;justify-content:center;transition:opacity .5s ease;';
+  intro.innerHTML = '<img src="/mediflow-logo.jpg" alt="MediFlow" style="width:120px;border-radius:12px;animation:consoleIn .6s ease-out both;"/>' +
+    '<div style="margin-top:14px;color:#e5e7eb;font:700 20px/1 Arial,sans-serif;letter-spacing:2px;animation:consoleIn .6s ease-out .3s both;">OFFICE CONSOLE</div>' +
+    '<style>@keyframes consoleIn{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}</style>';
+  document.body.appendChild(intro);
+  setTimeout(() => { intro.style.opacity = '0'; setTimeout(() => intro.remove(), 500); }, 1300);
+}
+
+// 'YYYY-MM' of a Firestore timestamp (local date)
+function monthKeyOf(ts) {
+  return ts && ts.toDate ? todayStrFromDate(ts.toDate()).slice(0, 7) : '';
+}
+
+// Every payment: paid bills, counter sales, and online orders that were paid. Optional month ('YYYY-MM') and method.
+async function consoleFetchPayments(month, method) {
+  const rows = [];
+  for (const hid of Object.keys(_console.hospitals)) {
+    const hname = _console.hospitals[hid];
+    const base = db.collection('hospitals/' + hid);
+    const get = q => q.limit(5000).get().catch(() => ({ docs: [] }));
+    const [bills, sales, orders] = await Promise.all([get(base.collection('bills')), get(base.collection('medicineSales')), get(base.collection('pharmacyOrders'))]);
+    const add = (src, d, date, m, amount, extra) => {
+      if (month && monthKeyOf(date) !== month) return;
+      if (method && method !== 'all' && m !== method) return;
+      rows.push(Object.assign({ Hospital: hname, Source: src, Date: consoleWhen(date), Reference: d.id, Method: m, Amount: Number(amount) || 0 }, extra));
+    };
+    bills.docs.filter(d => d.data().paid).forEach(d => {
+      const b = d.data();
+      add('Bill', d, b.paidAt || b.createdAt, b.paymentMethod || 'unspecified', b.total, { Patient: b.patientName || '' });
+    });
+    sales.docs.forEach(d => {
+      const s = d.data();
+      add('Counter sale', d, s.createdAt, s.paymentMethod || 'unspecified', s.total, { Patient: s.patientName || 'Walk-in' });
+    });
+    orders.docs.filter(d => d.data().paymentStatus === 'approved').forEach(d => {
+      const o = d.data();
+      add('Online order', d, o.createdAt, o.collectedVia || 'unspecified', o.total, { Patient: o.patientName || '' });
+    });
+  }
+  return rows;
+}
+
+async function consoleExportAllPayments() {
+  const month = (document.getElementById('consoleMonth') || {}).value || '';
+  const method = (document.getElementById('consolePayMethod') || {}).value || 'all';
+  try {
+    showToast('Preparing payments…', 'success');
+    const rows = await consoleFetchPayments(month, method);
+    const total = rows.reduce((s, r) => s + r.Amount, 0);
+    rows.push({ Hospital: 'TOTAL', Source: '', Date: '', Reference: '', Method: '', Amount: total, Patient: '' });
+    consoleDownloadCsv('mediflow-payments' + (month ? '-' + month : '') + (method !== 'all' ? '-' + method : '') + '.csv', rows, ['Hospital', 'Source', 'Date', 'Reference', 'Patient', 'Method', 'Amount']);
+  } catch (e) { showToast('Export failed: ' + e.message, 'error'); }
+}
+
+// One row per hospital for the month, plus a total row: everything the hospital did that month
+async function consoleFetchMonthReport(month) {
+  const out = [];
+  for (const hid of Object.keys(_console.hospitals)) {
+    const hname = _console.hospitals[hid];
+    const base = db.collection('hospitals/' + hid);
+    const get = q => q.limit(5000).get().catch(() => ({ docs: [] }));
+    const [pay, pats, staff, boys, orders, bills, appts] = await Promise.all([
+      consoleFetchPayments(month, 'all').then(rows => rows.filter(r => r.Hospital === hname)),
+      get(base.collection('patients')), get(base.collection('staff')), get(base.collection('deliveryBoys')),
+      get(base.collection('pharmacyOrders')), get(base.collection('bills')), get(base.collection('appointments'))
+    ]);
+    const hospPay = pay;
+    const sumBy = m => hospPay.filter(r => r.Method === m).reduce((s, r) => s + r.Amount, 0);
+    const billsInMonth = bills.docs.filter(d => monthKeyOf(d.data().createdAt) === month);
+    const ordersInMonth = orders.docs.filter(d => monthKeyOf(d.data().createdAt) === month);
+    const feesInMonth = orders.docs.filter(d => monthKeyOf(d.data().createdAt) === month && d.data().deliveryStatus === 'delivered')
+      .reduce((s, d) => s + (Number(d.data().deliveryCharge) || 0), 0);
+    out.push({
+      Hospital: hname, Month: month,
+      'Total received': hospPay.reduce((s, r) => s + r.Amount, 0),
+      'Cash': sumBy('cash'), 'UPI': sumBy('upi'), 'Card': sumBy('card'), 'Health card': sumBy('healthCard'), 'Insurance': sumBy('insurance'),
+      'Unspecified method': sumBy('unspecified'),
+      'Bills raised': billsInMonth.length,
+      'Bills unpaid (all time)': bills.docs.filter(d => !d.data().paid).reduce((s, d) => s + (Number(d.data().total) || 0), 0),
+      'Medicine orders': ordersInMonth.length,
+      'Delivery fees earned': feesInMonth,
+      'Appointments (created this month)': appts.docs.filter(d => monthKeyOf(d.data().createdAt) === month).length,
+      'Patients (total)': pats.docs.length, 'Employees': staff.docs.length, 'Delivery boys': boys.docs.length
+    });
+  }
+  return out;
+}
+
+async function consoleExportMonthReport() {
+  const month = (document.getElementById('consoleMonth') || {}).value || '';
+  if (!/^\d{4}-\d{2}$/.test(month)) { showToast('Choose a month first', 'error'); return; }
+  try {
+    showToast('Preparing the ' + month + ' report…', 'success');
+    const rows = await consoleFetchMonthReport(month);
+    if (rows.length > 1) {
+      const total = { Hospital: 'ALL HOSPITALS', Month: month };
+      Object.keys(rows[0]).slice(2).forEach(k => { total[k] = rows.reduce((s, r) => s + (Number(r[k]) || 0), 0); });
+      rows.push(total);
+    }
+    consoleDownloadCsv('mediflow-report-' + month + '.csv', rows, Object.keys(rows[0] || { Hospital: '' }));
+  } catch (e) { showToast('Report failed: ' + e.message, 'error'); }
+}
+
 function consoleRenderExport(el) {
+  const now = new Date();
+  const thisMonth = todayStrFromDate(now).slice(0, 7);
   el.innerHTML = '<div class="table-container" style="padding:18px;max-width:720px;">' +
-    '<div class="section-title">Export center</div>' +
-    '<p style="font-size:.85rem;color:var(--text2);">Each button downloads a CSV file (opens in Excel or Google Sheets). Your hospital only, or every hospital for the owner.</p>' +
-    '<div style="display:flex;flex-direction:column;gap:8px;margin-top:10px;">' +
+    '<div class="section-title">Month-end report and payments</div>' +
+    '<p style="font-size:.85rem;color:var(--text2);">Pick the month. The report has one row per hospital with everything received, by payment method, plus a total row.</p>' +
+    '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-top:8px;">' +
+    '<div class="form-group" style="margin:0;"><label>Month</label><input id="consoleMonth" type="month" value="' + thisMonth + '"/></div>' +
+    '<button class="btn btn-primary" style="width:auto;" onclick="consoleExportMonthReport()">📅 Month-end report (CSV)</button></div>' +
+    '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-top:14px;">' +
+    '<div class="form-group" style="margin:0;"><label>Payment method</label><select id="consolePayMethod">' +
+    ['all', 'cash', 'upi', 'card', 'healthCard', 'insurance', 'unspecified'].map(m => '<option value="' + m + '">' + m + '</option>').join('') + '</select></div>' +
+    '<button class="btn btn-secondary" style="width:auto;" onclick="consoleExportAllPayments()">💰 All payments (CSV, uses the month above)</button></div>' +
+    '<div style="margin-top:16px;border-top:1px solid var(--border);padding-top:12px;">' +
+    '<div class="section-title" style="font-size:.95rem;">Other exports</div>' +
+    '<div style="display:flex;flex-direction:column;gap:8px;margin-top:8px;">' +
     CONSOLE_EXPORTS.map((x, i) => '<button class="btn btn-secondary" style="width:100%;text-align:left;" onclick="consoleExportSection(' + i + ')">' + x.label + '</button>').join('') +
-    '</div>' +
-    '<div style="margin-top:16px;border-top:1px solid var(--border);padding-top:12px;display:flex;flex-direction:column;gap:8px;">' +
     '<button class="btn btn-secondary" style="width:100%;text-align:left;" onclick="consoleExport(\'users\')">👥 Users (all accounts)</button>' +
     '<button class="btn btn-secondary" style="width:100%;text-align:left;" onclick="consoleExport(\'activity\')">📜 Activity log</button>' +
-    '<button class="btn btn-secondary" style="width:100%;text-align:left;" onclick="consoleExport(\'suspicious\')">🚨 Suspicious activity</button></div></div>';
+    '<button class="btn btn-secondary" style="width:100%;text-align:left;" onclick="consoleExport(\'suspicious\')">🚨 Suspicious activity</button>' +
+    '</div></div></div>';
 }
+
 
 async function consoleExportSection(i) {
   const x = CONSOLE_EXPORTS[i];
