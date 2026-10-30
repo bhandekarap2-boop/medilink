@@ -20244,7 +20244,7 @@ async function renderOfficeConsole(hospitalOnly) {
   mc.innerHTML = '<div class="page-header"><h2>🗂️ ' + (hospitalOnly ? 'Users &amp; Activity' : 'Office Console') + '</h2>' +
     '<p>' + (hospitalOnly ? 'Your hospital\'s users, activity and blocking.' : 'Every hospital, user and activity on MediFlow. Block users or export CSV.') + '</p></div>' +
     '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;">' +
-    ['users', 'activity', 'suspicious', 'export'].map(t => '<button class="btn btn-secondary btn-sm" style="width:auto;" onclick="consoleTab(\'' + t + '\')">' + ({ users: '👥 Users', activity: '📜 Activity', suspicious: '🚨 Suspicious', export: '⬇️ Export CSV' })[t] + '</button>').join('') +
+    ['users', 'activity', 'suspicious', 'patient', 'export'].map(t => '<button class="btn btn-secondary btn-sm" style="width:auto;" onclick="consoleTab(\'' + t + '\')">' + ({ users: '👥 Users', activity: '📜 Activity', suspicious: '🚨 Suspicious', patient: '🧑 Patient record', export: '⬇️ Export center' })[t] + '</button>').join('') +
     '<button class="btn btn-secondary btn-sm" style="width:auto;" onclick="renderOfficeConsole(' + (hospitalOnly ? 'true' : 'false') + ')">🔄 Refresh</button></div>' +
     '<div id="consoleBody"><div class="empty-state"><p>Loading…</p></div></div>';
   try {
@@ -20263,13 +20263,8 @@ function consoleRender() {
   if (_console.tab === 'users') return consoleRenderUsers(el);
   if (_console.tab === 'activity') return consoleRenderActivity(el);
   if (_console.tab === 'suspicious') return consoleRenderSuspicious(el);
-  el.innerHTML = '<div class="table-container" style="padding:20px;max-width:720px;">' +
-    '<div class="section-title">Export</div>' +
-    '<p style="font-size:.85rem;color:var(--text2);">Downloads a CSV file you can open in Excel or Google Sheets.</p>' +
-    '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">' +
-    '<button class="btn btn-primary btn-sm" style="width:auto;" onclick="consoleExport(\'users\')">⬇️ Users CSV</button>' +
-    '<button class="btn btn-primary btn-sm" style="width:auto;" onclick="consoleExport(\'activity\')">⬇️ Activity CSV</button>' +
-    '<button class="btn btn-primary btn-sm" style="width:auto;" onclick="consoleExport(\'suspicious\')">⬇️ Suspicious CSV</button></div></div>';
+  if (_console.tab === 'patient') return consoleRenderPatient(el);
+  consoleRenderExport(el);
 }
 
 function consoleRenderUsers(el) {
@@ -20378,6 +20373,159 @@ async function logFailedLogin(hospitalId, username, why) {
       createdAt: firebase.firestore.FieldValue.serverTimestamp()
     });
   } catch (e) { /* recording must never block the login screen */ }
+}
+
+// ============ OFFICE CONSOLE: PATIENT RECORD (PATIENT PASSWORD) AND EXPORT CENTER ============
+// A patient's record opens only with that patient's own password. Every view is written to the activity log.
+
+function consoleDownloadCsv(name, rows, headers) {
+  const text = consoleCsv(rows, headers);
+  const blob = new Blob(['﻿' + text], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+}
+
+function consoleWhen(x) {
+  if (x && x.toDate) return consoleRelTime(x.toDate());
+  return x || '';
+}
+
+function consoleRenderPatient(el) {
+  el.innerHTML = '<div class="table-container" style="padding:18px;max-width:640px;">' +
+    '<div class="section-title">Patient record</div>' +
+    '<p style="font-size:.85rem;color:var(--text2);">Opens a patient\'s record only with that patient\'s own password. Each view is written to the activity log.</p>' +
+    '<div class="form-group"><label>Patient ID</label><input id="consolePatId" placeholder="e.g. CTC-0042"/></div>' +
+    '<div class="form-group"><label>Patient password</label><input id="consolePatPw" type="password"/></div>' +
+    '<button class="btn btn-primary" style="width:auto;" onclick="consolePatientLookup()">Open record</button>' +
+    '<div id="consolePatResult" style="margin-top:14px;"></div></div>';
+}
+
+async function consolePatientLookup() {
+  const id = ((document.getElementById('consolePatId') || {}).value || '').trim();
+  const pw = (document.getElementById('consolePatPw') || {}).value || '';
+  const out = document.getElementById('consolePatResult');
+  if (!id || !pw) { out.textContent = 'Enter the patient ID and password.'; return; }
+  out.textContent = 'Checking…';
+  try {
+    let accounts = await findPatientAccountsForLogin(id);
+    if (_console.hospitalOnly) accounts = accounts.filter(a => a.hospId === currentHospitalId);
+    if (!accounts.length) { out.textContent = 'Patient not found.'; return; }
+    const checks = await Promise.all(accounts.map(a => pwVerify(pw, a.patData.password)));
+    const acc = accounts.find((a, i) => checks[i]);
+    if (!acc) { out.textContent = 'Wrong patient password. The record stays closed.'; return; }
+    const pid = acc.patData.patientId || id;
+    const base = db.collection('hospitals/' + acc.hospId);
+    const [bills, orders] = await Promise.all([
+      base.collection('bills').where('patientId', '==', pid).get().catch(() => ({ docs: [] })),
+      base.collection('pharmacyOrders').where('patientId', '==', pid).get().catch(() => ({ docs: [] }))
+    ]);
+    const billRows = bills.docs.map(d => { const b = d.data(); return { Date: consoleWhen(b.createdAt) || b.date || '', Bill: d.id, Purpose: b.purpose || b.billType || '', Amount: b.total || 0, Status: b.paid ? 'Paid' : 'Unpaid', Method: b.paymentMethod || '' }; });
+    const orderRows = orders.docs.map(d => { const o = d.data(); return { Date: consoleWhen(o.createdAt), Order: o.orderNumber || d.id, Fulfilment: o.fulfillment || '', Total: o.total || 0, 'Payment status': o.paymentStatus || '', 'Collected via': o.collectedVia || '' }; });
+    const due = billRows.filter(b => b.Status === 'Unpaid').reduce((s, b) => s + (Number(b.Amount) || 0), 0);
+    _console.patientRows = { billRows, orderRows, pid };
+    await logAudit('patient_record_viewed', pid + ' ' + (acc.patData.name || ''), acc.hospId);
+    out.innerHTML = '<div style="padding:14px;border:1px solid var(--accent);border-radius:12px;">' +
+      '<strong style="font-size:1.05rem;">' + escHtmlSafe(acc.patData.name || '') + '</strong>' +
+      '<div style="font-size:.85rem;color:var(--text2);margin-top:4px;">ID ' + escHtmlSafe(pid) + ' · ' + escHtmlSafe(acc.patData.phone || '') + ' · ' + escHtmlSafe(_console.hospitals[acc.hospId] || acc.hospId) + '</div>' +
+      '<div style="font-size:.9rem;margin-top:10px;">Bills: ' + billRows.length + ' · Unpaid: ₹' + due + ' · Medicine orders: ' + orderRows.length + '</div>' +
+      '<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">' +
+      '<button class="btn btn-primary btn-sm" style="width:auto;" onclick="consoleExportPatient(\'bills\')">⬇️ Bills CSV</button>' +
+      '<button class="btn btn-primary btn-sm" style="width:auto;" onclick="consoleExportPatient(\'orders\')">⬇️ Orders CSV</button></div></div>';
+  } catch (e) { out.textContent = 'Could not open the record: ' + e.message; }
+}
+
+function consoleExportPatient(kind) {
+  const r = _console.patientRows;
+  if (!r) return;
+  if (kind === 'bills') consoleDownloadCsv('patient-' + r.pid + '-bills.csv', r.billRows, ['Date', 'Bill', 'Purpose', 'Amount', 'Status', 'Method']);
+  else consoleDownloadCsv('patient-' + r.pid + '-orders.csv', r.orderRows, ['Date', 'Order', 'Fulfilment', 'Total', 'Payment status', 'Collected via']);
+}
+
+// Rows for one export. method filters payments (cash, upi, healthCard, insurance, ...), 'all' for everything.
+async function consoleFetchRows(kind, method) {
+  const rows = [];
+  for (const hid of Object.keys(_console.hospitals)) {
+    const hname = _console.hospitals[hid];
+    const base = db.collection('hospitals/' + hid);
+    const get = q => q.limit(5000).get().catch(() => ({ docs: [] }));
+    if (kind === 'payments') {
+      (await get(base.collection('bills'))).docs.forEach(d => {
+        const b = d.data();
+        const m = b.paymentMethod || (b.paid ? 'unspecified' : 'unpaid');
+        if (method !== 'all' && m !== method) return;
+        rows.push({ Hospital: hname, Date: consoleWhen(b.createdAt) || b.date || '', Bill: d.id, Patient: b.patientName || '', 'Patient ID': b.patientId || '', Purpose: b.purpose || b.billType || '', Amount: b.total || 0, Status: b.paid ? 'Paid' : 'Unpaid', Method: m });
+      });
+    } else if (kind === 'orders') {
+      (await get(base.collection('pharmacyOrders'))).docs.forEach(d => {
+        const o = d.data();
+        rows.push({ Hospital: hname, Date: consoleWhen(o.createdAt), Order: o.orderNumber || d.id, Patient: o.patientName || '', Fulfilment: o.fulfillment || '', Total: o.total || 0, 'Payment status': o.paymentStatus || '', 'Collected via': o.collectedVia || '', Status: o.status || '' });
+      });
+    } else if (kind === 'staff') {
+      (await get(base.collection('staff'))).docs.forEach(d => {
+        const s = d.data();
+        rows.push({ Hospital: hname, Name: s.name || '', Role: s.role || '', Phone: s.phone || '', Email: s.email || '', Blocked: s.blocked === true ? 'Yes' : 'No' });
+      });
+    } else if (kind === 'deliveryboys') {
+      (await get(base.collection('deliveryBoys'))).docs.forEach(d => {
+        const b = d.data();
+        rows.push({ Hospital: hname, Name: b.name || '', Username: b.username || '', Phone: b.phone || '', Email: b.email || '', 'On duty today': isOnDutyToday(b) ? 'Yes' : 'No', Blocked: b.blocked === true ? 'Yes' : 'No' });
+      });
+    } else if (kind === 'stock') {
+      (await get(base.collection('medicines'))).docs.forEach(d => {
+        const m = d.data();
+        rows.push({ Hospital: hname, Medicine: m.name || '', Category: m.category || '', Stock: m.stock || 0, 'Cost price': m.costPrice || 0, 'Sell price': m.sellPrice || 0, Barcode: m.barcode || '', Expiry: m.expiryDate || '' });
+      });
+    } else if (kind === 'report') {
+      const [pats, bills, orders, staff, boys] = await Promise.all([get(base.collection('patients')), get(base.collection('bills')), get(base.collection('pharmacyOrders')), get(base.collection('staff')), get(base.collection('deliveryBoys'))]);
+      const paid = bills.docs.filter(d => d.data().paid).reduce((s, d) => s + (Number(d.data().total) || 0), 0);
+      const unpaid = bills.docs.filter(d => !d.data().paid).reduce((s, d) => s + (Number(d.data().total) || 0), 0);
+      const byMethod = m => bills.docs.filter(d => d.data().paid && (d.data().paymentMethod || '') === m).reduce((s, d) => s + (Number(d.data().total) || 0), 0);
+      rows.push({ Hospital: hname, Patients: pats.docs.length, Staff: staff.docs.length, 'Delivery boys': boys.docs.length, Bills: bills.docs.length, 'Paid total': paid, 'Unpaid total': unpaid, 'Paid by cash': byMethod('cash'), 'Paid by UPI': byMethod('upi'), 'Paid by health card': byMethod('healthCard'), 'Paid by insurance': byMethod('insurance'), 'Medicine orders': orders.docs.length });
+    }
+  }
+  return rows;
+}
+
+const CONSOLE_EXPORTS = [
+  { kind: 'payments', method: 'all', label: '💳 All payments' },
+  { kind: 'payments', method: 'cash', label: '💵 Cash payments' },
+  { kind: 'payments', method: 'upi', label: '📱 UPI payments' },
+  { kind: 'payments', method: 'healthCard', label: '🪪 Health card payments' },
+  { kind: 'payments', method: 'insurance', label: '🛡️ Insurance payments' },
+  { kind: 'orders', label: '🛒 Medicine orders' },
+  { kind: 'staff', label: '👔 Employees (staff)' },
+  { kind: 'deliveryboys', label: '🛵 Delivery boys' },
+  { kind: 'stock', label: '📦 Medicine stock' },
+  { kind: 'report', label: '📊 Overall report (one row per hospital)' }
+];
+
+function consoleRenderExport(el) {
+  el.innerHTML = '<div class="table-container" style="padding:18px;max-width:720px;">' +
+    '<div class="section-title">Export center</div>' +
+    '<p style="font-size:.85rem;color:var(--text2);">Each button downloads a CSV file (opens in Excel or Google Sheets). Your hospital only, or every hospital for the owner.</p>' +
+    '<div style="display:flex;flex-direction:column;gap:8px;margin-top:10px;">' +
+    CONSOLE_EXPORTS.map((x, i) => '<button class="btn btn-secondary" style="width:100%;text-align:left;" onclick="consoleExportSection(' + i + ')">' + x.label + '</button>').join('') +
+    '</div>' +
+    '<div style="margin-top:16px;border-top:1px solid var(--border);padding-top:12px;display:flex;flex-direction:column;gap:8px;">' +
+    '<button class="btn btn-secondary" style="width:100%;text-align:left;" onclick="consoleExport(\'users\')">👥 Users (all accounts)</button>' +
+    '<button class="btn btn-secondary" style="width:100%;text-align:left;" onclick="consoleExport(\'activity\')">📜 Activity log</button>' +
+    '<button class="btn btn-secondary" style="width:100%;text-align:left;" onclick="consoleExport(\'suspicious\')">🚨 Suspicious activity</button></div></div>';
+}
+
+async function consoleExportSection(i) {
+  const x = CONSOLE_EXPORTS[i];
+  if (!x) return;
+  try {
+    showToast('Preparing ' + x.label + '…', 'success');
+    const rows = await consoleFetchRows(x.kind, x.method || 'all');
+    const headers = rows.length ? Object.keys(rows[0]) : ['No data'];
+    const name = 'mediflow-' + (x.kind + (x.method && x.method !== 'all' ? '-' + x.method : '')) + '.csv';
+    consoleDownloadCsv(name, rows, headers);
+  } catch (e) { showToast('Export failed: ' + e.message, 'error'); }
 }
 
 // Asks the server to give waiting delivery orders to boys on duty. Safe to call often: it only touches unassigned orders.
