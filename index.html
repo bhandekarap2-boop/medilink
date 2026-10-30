@@ -18710,6 +18710,17 @@ function exportRecordsCsv() {
 // font, so the app looks identical on every device. Keyed by the emoji they replace; anything not in the
 // table simply keeps its emoji until an icon is drawn for it.
 const MF_ICON_PATHS = {
+  '🗂': '<path d="M3 6h7l2 2h9v11H3z"/>',
+  '🧾': '<path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 8h6M9 12h6"/>',
+  '🛠': '<path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2.4-.6-.6-2.4z"/>',
+  '🪪': '<rect x="2" y="5" width="20" height="14" rx="2"/><circle cx="8" cy="12" r="2"/><path d="M14 10h4M14 14h3"/>',
+  '🛵': '<circle cx="6" cy="17" r="3"/><circle cx="18" cy="17" r="3"/><path d="M6 17l3-7h5l3 4M11 10l-1-3H7"/>',
+  '💵': '<rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/>',
+  '🚨': '<path d="M12 3v3M5.6 6.6l2 2M18.4 6.6l-2 2M4 14h16M7 14a5 5 0 0 1 10 0"/>',
+  '👔': '<circle cx="12" cy="7" r="4"/><path d="M5 21c1-4 4-6 7-6s6 2 7 6M12 11v10"/>',
+  '📦': '<path d="M3 7l9-4 9 4v10l-9 4-9-4z"/><path d="M3 7l9 4 9-4M12 11v10"/>',
+  '🛒': '<circle cx="9" cy="20" r="1.5"/><circle cx="18" cy="20" r="1.5"/><path d="M2 3h3l3 12h11l2-8H6"/>',
+  '⏳': '<path d="M6 2h12M6 22h12M7 2c0 5 5 6 5 10s-5 5-5 10M17 2c0 5-5 6-5 10s5 5 5 10"/>',
   '📊': '<rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/>',
   '👨‍⚕': '<path d="M6 3v6a4 4 0 0 0 8 0V3"/><path d="M10 13v2a5 5 0 0 0 10 0v-1"/><circle cx="20" cy="12" r="2"/>',
   '🧑': '<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7"/>',
@@ -18799,11 +18810,12 @@ const MF_ICON_COLORS = (function() {
   g('#ffab40', '⚠ 🚫 ❌ 🗑');
   return out;
 })();
+function emojiText(k) { return k; }
 function mfIcon(emoji, size, tile) {
   const k = mfIconKey(emoji);
   if (!k) return emoji;
   // Never show a raw icon name: an unknown name is drawn as a plain dot.
-  if (!MF_ICON_PATHS[k]) return mfIcon('__dot', size, tile);
+  if (!MF_ICON_PATHS[k]) return '<span>' + emojiText(k) + '</span>';
   const px = size || 20, col = MF_ICON_COLORS[k] || '#00e676';
   // Small icons (buttons, labels, tabs) take the text colour around them, so they stay readable on any background
   // (for example the selected cyan tab). Only the menu tiles keep their own colour.
@@ -20929,16 +20941,18 @@ function fbCopy(id) {
 }
 
 // ============ NEW BILL, STEP BY STEP ============
-// Step 1: the patient. Step 2: what is charged. Step 3: how it is paid. Step 4: check, save and print.
-let _bw = { step: 1, patient: null, items: [{ name: '', amount: '' }], method: 'cash', paidNow: true };
+// Step 1: the patient. Step 2: what is charged. Step 3: how it is usually paid. Step 4: check and save.
+// After saving: print the receipt, take the payment (UPI QR, cash, card, health card or insurance),
+// or leave it as due.
+let _bw = { step: 1, patient: null, items: [{ name: '', amount: '' }], method: 'cash', billId: null, savedItems: [], savedTotal: 0, paidMethod: '' };
 
 function renderBillWizard() {
-  _bw = { step: 1, patient: null, items: [{ name: '', amount: '' }], method: 'cash', paidNow: true };
+  _bw = { step: 1, patient: null, items: [{ name: '', amount: '' }], method: 'cash', billId: null, savedItems: [], savedTotal: 0, paidMethod: '' };
   billWizardDraw();
 }
 
 function billWizardSteps() {
-  const names = ['Patient', 'Items', 'Payment', 'Confirm'];
+  const names = ['Patient', 'Items', 'Payment', 'Confirm and pay'];
   return '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;">' + names.map((n, i) =>
     '<span style="padding:6px 12px;border-radius:999px;font-size:.85rem;background:' + (_bw.step === i + 1 ? 'var(--accent)' : 'var(--surface2)') + ';color:' + (_bw.step === i + 1 ? '#000' : 'var(--text2)') + ';">' + (i + 1) + '. ' + n + '</span>').join('') + '</div>';
 }
@@ -20949,59 +20963,58 @@ function billWizardDraw() {
   if (_bw.step === 1) {
     body = '<p style="font-size:.9rem;">Type the patient ID (for example CTC-0042). Walk-in bills can skip this.</p>' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap;"><input id="bwPatId" placeholder="Patient ID" value="' + escHtmlSafe(_bw.patient ? _bw.patient.id : '') + '" style="flex:1;min-width:180px;"/>' +
-      '<button class="btn btn-secondary" style="width:auto;" onclick="billWizardFindPatient()">Find</button></div>' +
+      '<button class="btn btn-secondary" style="width:auto;" onclick="billWizardFindPatient()">🔍 Find</button></div>' +
       '<div id="bwPatInfo" style="margin-top:10px;font-size:.9rem;">' + (_bw.patient ? '✅ ' + escHtmlSafe(_bw.patient.name) + ' (' + escHtmlSafe(_bw.patient.id) + ')' : '') + '</div>' +
-      '<div style="display:flex;gap:8px;margin-top:16px;"><button class="btn btn-secondary" style="width:auto;" onclick="billWizardSetPatient(null)">Walk-in</button>' +
+      '<div style="display:flex;gap:8px;margin-top:16px;"><button class="btn btn-secondary" style="width:auto;" onclick="billWizardSetWalkIn()">Walk-in</button>' +
       '<button class="btn btn-primary" style="width:auto;" onclick="billWizardNext()">Next →</button></div>';
   } else if (_bw.step === 2) {
     body = '<p style="font-size:.9rem;">Add each thing being charged, with its amount.</p>' +
       _bw.items.map((it, i) => '<div style="display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap;"><input placeholder="e.g. Consultation" value="' + escHtmlSafe(it.name) + '" oninput="billWizardSet(' + i + ',\'name\',this.value)" style="flex:2;min-width:160px;"/>' +
       '<input type="number" placeholder="₹" value="' + escHtmlSafe(it.amount) + '" oninput="billWizardSet(' + i + ',\'amount\',this.value)" style="flex:1;min-width:90px;"/>' +
-      '<button class="btn btn-secondary btn-sm" style="width:auto;" onclick="billWizardRemove(' + i + ')">✕</button></div>').join('') +
-      '<button class="btn btn-secondary btn-sm" style="width:auto;margin-top:4px;" onclick="billWizardAdd()">+ Add an item</button>' +
-      '<div style="font-size:1.1rem;font-weight:700;margin-top:12px;">Total: ₹' + billWizardTotal() + '</div>' +
+      '<button class="btn btn-secondary btn-sm" style="width:auto;" onclick="billWizardRemove(' + i + ')">🗑 Remove</button></div>').join('') +
+      '<button class="btn btn-secondary btn-sm" style="width:auto;margin-top:4px;" onclick="billWizardAdd()">➕ Add an item</button>' +
+      '<div id="bwTotal" style="font-size:1.1rem;font-weight:700;margin-top:12px;">Total: ₹' + billWizardTotal() + '</div>' +
       '<div style="display:flex;gap:8px;margin-top:14px;"><button class="btn btn-secondary" style="width:auto;" onclick="billWizardBack()">← Back</button>' +
       '<button class="btn btn-primary" style="width:auto;" onclick="billWizardNext()">Next →</button></div>';
   } else if (_bw.step === 3) {
-    body = '<p style="font-size:.9rem;">How is it paid?</p>' +
+    body = '<p style="font-size:.9rem;">How will this usually be paid? You can still change it when you take the payment.</p>' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap;">' + [['cash', '💵 Cash'], ['upi', '📱 UPI'], ['card', '💳 Card'], ['healthCard', '🪪 Health card'], ['insurance', '🛡️ Insurance']].map(([v, l]) =>
         '<button class="btn ' + (_bw.method === v ? 'btn-primary' : 'btn-secondary') + '" style="width:auto;" onclick="billWizardMethod(\'' + v + '\')">' + l + '</button>').join('') + '</div>' +
-      '<label style="display:flex;gap:8px;align-items:center;margin-top:14px;"><input type="checkbox" id="bwPaidNow"' + (_bw.paidNow ? ' checked' : '') + ' onchange="billWizardPaidNow(this.checked)"/> Paid now</label>' +
       '<div style="display:flex;gap:8px;margin-top:14px;"><button class="btn btn-secondary" style="width:auto;" onclick="billWizardBack()">← Back</button>' +
       '<button class="btn btn-primary" style="width:auto;" onclick="billWizardNext()">Next →</button></div>';
-  } else {
+  } else if (!_bw.billId) {
     body = '<div style="padding:14px;border:1px solid var(--accent);border-radius:12px;">' +
       '<div><strong>Patient:</strong> ' + escHtmlSafe(_bw.patient ? _bw.patient.name + ' (' + _bw.patient.id + ')' : 'Walk-in') + '</div>' +
-      _bw.items.filter(i => i.name || i.amount).map(i => '<div style="font-size:.9rem;margin-top:4px;">' + escHtmlSafe(i.name) + ' — ₹' + (Number(i.amount) || 0) + '</div>').join('') +
+      billWizardFilledItems(_bw.items).map(i => '<div style="font-size:.9rem;margin-top:4px;">' + escHtmlSafe(i.name) + ' — ₹' + i.amount + '</div>').join('') +
       '<div style="font-size:1.1rem;font-weight:700;margin-top:10px;">Total: ₹' + billWizardTotal() + '</div>' +
-      '<div style="margin-top:4px;">Payment: ' + escHtmlSafe(_bw.method) + ' · ' + (_bw.paidNow ? 'Paid now' : 'Unpaid (will show as due)') + '</div></div>' +
+      '<div style="margin-top:4px;">Usually paid by: ' + escHtmlSafe(_bw.method) + '</div></div>' +
       '<div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap;"><button class="btn btn-secondary" style="width:auto;" onclick="billWizardBack()">← Back</button>' +
-      '<button class="btn btn-primary" style="width:auto;" onclick="billWizardSave(true)">Save and print</button>' +
-      '<button class="btn btn-secondary" style="width:auto;" onclick="billWizardSave(false)">Save without printing</button></div>';
+      '<button class="btn btn-primary" style="width:auto;" onclick="billWizardSave()">💾 Save bill</button></div>';
+  } else {
+    body = billWizardPayPanel();
   }
-  mc.innerHTML = '<div class="page-header"><h2>🧾 New bill</h2><p>Four steps. Nothing is saved until the last step.</p></div>' +
+  mc.innerHTML = '<div class="page-header"><h2>🧾 New bill</h2><p>Four steps. Then print the receipt and take the payment.</p></div>' +
     '<div class="table-container" style="padding:20px;max-width:640px;">' + billWizardSteps() + body + '</div>';
 }
 
+function billWizardFilledItems(items) { return items.filter(i => i.name && Number(i.amount) > 0).map(i => ({ name: i.name, amount: Number(i.amount) })); }
 function billWizardTotal() { return _bw.items.reduce((s, i) => s + (Number(i.amount) || 0), 0); }
+
 function billWizardNext() {
   if (_bw.step === 1) {
     const v = ((document.getElementById('bwPatId') || {}).value || '').trim();
     if (!_bw.patient && v) { showToast('Find the patient first, or choose Walk-in', 'error'); return; }
   }
-  if (_bw.step === 2) {
-    if (!_bw.items.some(i => i.name && Number(i.amount) > 0)) { showToast('Add at least one item with an amount', 'error'); return; }
-  }
+  if (_bw.step === 2 && !billWizardFilledItems(_bw.items).length) { showToast('Add at least one item with an amount', 'error'); return; }
   _bw.step = Math.min(4, _bw.step + 1);
   billWizardDraw();
 }
-function billWizardBack() { _bw.step = Math.max(1, _bw.step - 1); billWizardDraw(); }
-function billWizardSetPatient(p) { _bw.patient = p; billWizardNext(); }
-function billWizardSet(i, k, v) { _bw.items[i][k] = v; }
+function billWizardBack() { if (_bw.billId) return; _bw.step = Math.max(1, _bw.step - 1); billWizardDraw(); }
+function billWizardSetWalkIn() { _bw.patient = null; billWizardNext(); }
+function billWizardSet(i, k, v) { _bw.items[i][k] = v; const t = document.getElementById('bwTotal'); if (t) t.textContent = 'Total: ₹' + billWizardTotal(); }
 function billWizardAdd() { _bw.items.push({ name: '', amount: '' }); billWizardDraw(); }
 function billWizardRemove(i) { _bw.items.splice(i, 1); if (!_bw.items.length) _bw.items.push({ name: '', amount: '' }); billWizardDraw(); }
 function billWizardMethod(m) { _bw.method = m; billWizardDraw(); }
-function billWizardPaidNow(v) { _bw.paidNow = !!v; }
 
 async function billWizardFindPatient() {
   const id = ((document.getElementById('bwPatId') || {}).value || '').trim().toUpperCase();
@@ -21010,34 +21023,87 @@ async function billWizardFindPatient() {
   const snap = await db.collection('hospitals/' + currentHospitalId + '/patients').where('patientId', '==', id).limit(1).get().catch(() => null);
   if (!snap || snap.empty) { info.textContent = 'Patient not found in this hospital.'; _bw.patient = null; return; }
   const d = snap.docs[0].data();
-  _bw.patient = { id: d.patientId || id, name: d.name || '', docId: snap.docs[0].id };
+  _bw.patient = { id: d.patientId || id, name: d.name || '' };
   info.textContent = '✅ ' + _bw.patient.name + ' (' + _bw.patient.id + ')';
 }
 
-async function billWizardSave(print) {
-  const items = _bw.items.filter(i => i.name && Number(i.amount) > 0).map(i => ({ name: i.name, amount: Number(i.amount) }));
+// Saves the bill as not yet paid, then shows the payment panel
+async function billWizardSave() {
+  const items = billWizardFilledItems(_bw.items);
   const total = items.reduce((s, i) => s + i.amount, 0);
   if (!items.length || !total) { showToast('Nothing to bill', 'error'); return; }
   try {
     const ref = await db.collection('hospitals/' + currentHospitalId + '/bills').add({
       patientId: _bw.patient ? _bw.patient.id : '', patientName: _bw.patient ? _bw.patient.name : 'Walk-in',
       items, purpose: items.map(i => i.name).join(', '), billType: 'bill', total,
-      paid: _bw.paidNow, paymentMethod: _bw.method, date: todayStr(),
-      paidAt: _bw.paidNow ? firebase.firestore.FieldValue.serverTimestamp() : null,
+      paid: false, paymentMethod: '', date: todayStr(),
       createdBy: currentUser.uid, createdAt: firebase.firestore.FieldValue.serverTimestamp()
     });
-    await logAudit('bill_created', 'Bill ' + ref.id + ' ₹' + total + ' (' + _bw.method + ')');
-    if (print) {
-      const rows = items.map(i => '<tr><td style="padding:8px 0;border-bottom:1px solid #eee;">' + escHtmlSafe(i.name) + '</td><td style="text-align:right;padding:8px 0;border-bottom:1px solid #eee;">₹' + i.amount + '</td></tr>').join('');
-      printHtmlInFrame('<!DOCTYPE html><html><head><title>Bill</title><style>body{font-family:Arial,sans-serif;padding:24px;max-width:640px;margin:0 auto;}table{width:100%;border-collapse:collapse;}</style></head><body>' +
-        '<h2 style="text-align:center;">Bill</h2><div>Bill no: ' + ref.id + '</div><div>Date: ' + todayStr() + '</div>' +
-        '<div>Patient: ' + escHtmlSafe(_bw.patient ? _bw.patient.name + ' (' + _bw.patient.id + ')' : 'Walk-in') + '</div>' +
-        '<table style="margin-top:14px;"><tbody>' + rows + '<tr><td style="padding:10px 0;font-weight:700;">Total</td><td style="text-align:right;padding:10px 0;font-weight:700;">₹' + total + '</td></tr></tbody></table>' +
-        '<div style="margin-top:10px;">Payment: ' + escHtmlSafe(_bw.method) + (_bw.paidNow ? ' (paid)' : ' (due)') + '</div></body></html>');
-    }
-    showToast('✅ Bill saved', 'success');
-    renderBillWizard();
+    _bw.billId = ref.id;
+    _bw.savedItems = items;
+    _bw.savedTotal = total;
+    await logAudit('bill_created', 'Bill ' + ref.id + ' ₹' + total);
+    billWizardDraw();
   } catch (e) { showToast('Could not save the bill: ' + e.message, 'error'); }
+}
+
+function billWizardPayPanel() {
+  const paid = !!_bw.paidMethod;
+  const head = '<div style="padding:12px 14px;border:1px solid var(--accent);border-radius:12px;"><strong>Bill saved</strong> · ' + escHtmlSafe(_bw.billId) +
+    '<div style="font-size:1.1rem;font-weight:700;margin-top:6px;">₹' + _bw.savedTotal + ' · ' + (paid ? '✅ Paid by ' + escHtmlSafe(_bw.paidMethod) : '⏳ Not paid yet') + '</div></div>';
+  const pay = paid ? '' : '<div style="font-weight:700;margin-top:14px;">Take the payment</div>' +
+    '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">' +
+    '<button class="btn btn-primary" style="width:auto;" onclick="billWizardUpi()">📱 UPI (QR)</button>' +
+    '<button class="btn btn-primary" style="width:auto;" onclick="billWizardMarkPaid(\'cash\')">💵 Cash received</button>' +
+    '<button class="btn btn-primary" style="width:auto;" onclick="billWizardMarkPaid(\'card\')">💳 Card received</button>' +
+    '<button class="btn btn-secondary" style="width:auto;" onclick="billWizardMarkPaid(\'healthCard\')">🪪 Health card</button>' +
+    '<button class="btn btn-secondary" style="width:auto;" onclick="billWizardMarkPaid(\'insurance\')">🛡️ Insurance</button></div>' +
+    '<div id="bwUpi" style="margin-top:10px;"></div>';
+  const actions = '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:16px;">' +
+    '<button class="btn btn-secondary" style="width:auto;" onclick="billWizardPrint()">🧾 Print receipt</button>' +
+    (paid ? '' : '<button class="btn btn-secondary" style="width:auto;" onclick="billWizardLeaveDue()">Leave as due</button>') +
+    '<button class="btn btn-primary" style="width:auto;" onclick="renderBillWizard()">➕ New bill</button></div>';
+  return head + pay + actions;
+}
+
+// The UPI QR for the bill total, using the hospital's UPI ID (same as delivery payments)
+async function billWizardUpi() {
+  const box = document.getElementById('bwUpi');
+  if (!box) return;
+  const upiId = await getHospitalUPI();
+  if (!upiId) { box.innerHTML = '<div style="color:var(--orange);font-size:.85rem;">The hospital UPI ID is not set. Set it in Settings, or take cash.</div>'; return; }
+  const hospSnap = await db.collection('hospitals').doc(currentHospitalId).get();
+  const hospName = (hospSnap.exists && hospSnap.data().name) || 'MediFlow Hospital';
+  const url = buildUPIUrl(upiId, hospName, _bw.savedTotal, _bw.billId + ' - Bill');
+  box.innerHTML = '<img src="' + buildQRImageUrl(url) + '" style="width:190px;height:190px;border-radius:10px;border:3px solid var(--accent);"/>' +
+    '<div style="margin-top:8px;"><button class="btn btn-primary" style="width:auto;" onclick="billWizardMarkPaid(\'upi\')">✅ Received via UPI</button></div>';
+}
+
+async function billWizardMarkPaid(method) {
+  try {
+    await db.collection('hospitals/' + currentHospitalId + '/bills').doc(_bw.billId).update({
+      paid: true, paymentMethod: method, paidAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+    await logAudit('bill_paid', 'Bill ' + _bw.billId + ' ₹' + _bw.savedTotal + ' (' + method + ')');
+    _bw.paidMethod = method;
+    showToast('✅ Payment recorded', 'success');
+    billWizardDraw();
+  } catch (e) { showToast('Could not record the payment: ' + e.message, 'error'); }
+}
+
+function billWizardLeaveDue() {
+  showToast('Saved as due. It shows in the bills list until it is paid.', 'success');
+}
+
+function billWizardPrint() {
+  if (!_bw.billId) return;
+  const rows = _bw.savedItems.map(i => '<tr><td style="padding:8px 0;border-bottom:1px solid #eee;">' + escHtmlSafe(i.name) + '</td><td style="text-align:right;padding:8px 0;border-bottom:1px solid #eee;">₹' + i.amount + '</td></tr>').join('');
+  const status = _bw.paidMethod ? 'PAID (' + _bw.paidMethod + ')' : 'DUE';
+  printHtmlInFrame('<!DOCTYPE html><html><head><title>Receipt</title><style>body{font-family:Arial,sans-serif;padding:24px;max-width:640px;margin:0 auto;}table{width:100%;border-collapse:collapse;}</style></head><body>' +
+    '<h2 style="text-align:center;">Receipt</h2><div>Bill no: ' + escHtmlSafe(_bw.billId) + '</div><div>Date: ' + todayStr() + '</div>' +
+    '<div>Patient: ' + escHtmlSafe(_bw.patient ? _bw.patient.name + ' (' + _bw.patient.id + ')' : 'Walk-in') + '</div>' +
+    '<table style="margin-top:14px;"><tbody>' + rows + '<tr><td style="padding:10px 0;font-weight:700;">Total</td><td style="text-align:right;padding:10px 0;font-weight:700;">₹' + _bw.savedTotal + '</td></tr></tbody></table>' +
+    '<div style="margin-top:10px;font-weight:700;">Status: ' + status + '</div></body></html>');
 }
 
 // Asks the server to give waiting delivery orders to boys on duty. Safe to call often: it only touches unassigned orders.
